@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tauri v2 + Leptos Spike</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <!-- Trunk：将本目录的 Rust crate 编译为 WASM 并注入页面（无 Node.js 参与） -->
+    <link data-trunk rel="rust" href="." data-wasm-opt="z" />
+  </body>
+</html>
