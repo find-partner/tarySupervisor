@@ -11,3 +11,6 @@ dist/
 
 # 系统文件
 .DS_Store
+
+# IDE
+.idea/

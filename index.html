@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TraySupervisor</title>
+    <style>
+      /* 保守 CSS（HLD R8：三 WebView 内核渲染差异，不做高级视觉） */
+      :root {
+        --fg: #1f2328;
+        --muted: #6e7781;
+        --line: #d0d7de;
+        --bg: #ffffff;
+        --accent: #0969da;
+        --danger: #cf222e;
+        --ok: #1a7f37;
+        --warn: #9a6700;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; padding: 0; height: 100%;
+        font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 13px; color: var(--fg); background: var(--bg);
+      }
+      #app { height: 100%; }
+      .toolbar {
+        display: flex; align-items: center; gap: 8px;
+        padding: 8px 12px; border-bottom: 1px solid var(--line);
+        position: sticky; top: 0; background: var(--bg); z-index: 5;
+      }
+      .toolbar .spacer { flex: 1; }
+      button {
+        font: inherit; padding: 4px 12px; border: 1px solid var(--line);
+        border-radius: 6px; background: #f6f8fa; cursor: pointer; color: var(--fg);
+      }
+      button:hover { background: #eef1f4; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button.danger { color: var(--danger); }
+      button:disabled { opacity: 0.45; cursor: default; }
+      input[type="text"], input[type="number"], select {
+        font: inherit; padding: 4px 8px; border: 1px solid var(--line);
+        border-radius: 6px; width: 100%; background: #fff; color: var(--fg);
+      }
+      input[type="checkbox"] { accent-color: var(--accent); }
+
+      /* ---------- 设置窗口 ---------- */
+      .settings { display: flex; height: 100%; }
+      .svc-list {
+        width: 240px; min-width: 200px; border-right: 1px solid var(--line);
+        overflow-y: auto; padding: 8px;
+      }
+      .svc-list h3 { margin: 4px 4px 8px; font-size: 12px; color: var(--muted); font-weight: 600; }
+      .svc-item {
+        display: flex; align-items: center; gap: 6px;
+        padding: 6px 8px; border-radius: 6px; cursor: pointer; margin-bottom: 2px;
+      }
+      .svc-item:hover { background: #f0f3f6; }
+      .svc-item.active { background: #ddf4ff; }
+      .svc-item .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+      .svc-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .svc-item .st { font-size: 11px; color: var(--muted); }
+      .editor { flex: 1; overflow-y: auto; padding: 14px 18px 28px; }
+      .editor h2 { margin: 0 0 14px; font-size: 16px; }
+      .field-grid { display: grid; grid-template-columns: 110px 1fr; gap: 8px 10px; align-items: center; max-width: 760px; }
+      .field-grid label { color: var(--muted); }
+      .field-grid .full { grid-column: 1 / -1; }
+      .hint { color: var(--muted); font-size: 11px; grid-column: 2; margin-top: -4px; }
+      .section-title {
+        margin: 18px 0 8px; font-size: 12px; font-weight: 700; color: var(--muted);
+        text-transform: uppercase; letter-spacing: 0.4px; border-bottom: 1px solid var(--line);
+        padding-bottom: 4px; max-width: 760px;
+      }
+      table.kv { border-collapse: collapse; max-width: 760px; width: 100%; }
+      table.kv th, table.kv td { border: 1px solid var(--line); padding: 3px 6px; text-align: left; }
+      table.kv th { background: #f6f8fa; font-weight: 600; font-size: 12px; }
+      table.kv td input { border: none; padding: 2px 4px; }
+      table.kv td.center { text-align: center; }
+      .errors {
+        max-width: 760px; margin-top: 12px; border: 1px solid #ffc1c1; background: #fff1f1;
+        color: var(--danger); border-radius: 6px; padding: 8px 12px;
+      }
+      .errors li { margin: 2px 0; }
+      .preview {
+        max-width: 760px; margin-top: 10px; background: #f6f8fa; border: 1px solid var(--line);
+        border-radius: 6px; padding: 8px 12px; font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-size: 12px; white-space: pre-wrap; word-break: break-all;
+      }
+      .row-btns { display: flex; gap: 8px; margin-top: 16px; max-width: 760px; }
+
+      /* ---------- 日志窗口 ---------- */
+      .logwin { display: flex; flex-direction: column; height: 100%; }
+      .logview {
+        flex: 1; overflow-y: auto; padding: 6px 10px;
+        font-family: ui-monospace, Menlo, Consolas, "Courier New", monospace;
+        font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-all;
+        user-select: text;
+      }
+      .logview .ln { display: block; }
+      .logview .err { color: var(--danger); }
+      .logview .t { color: var(--muted); }
+      .logview .tag { color: #8250df; }
+
+      /* ---------- 终端视图 ---------- */
+      .termwin { display: flex; flex-direction: column; height: 100%; background: #101216; }
+      .termscreen {
+        flex: 1; overflow: auto; padding: 8px 10px; margin: 0;
+        background: #101216; color: #d7dae0;
+        font-family: ui-monospace, Menlo, Consolas, "Courier New", monospace;
+        font-size: 12.5px; line-height: 1.35; white-space: pre; user-select: text;
+      }
+      .termbar {
+        padding: 6px 12px; background: #16191f; color: #9aa4b2;
+        border-top: 1px solid #262b33; font-size: 12px;
+        display: flex; gap: 10px; align-items: center;
+      }
+      .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+      .muted { color: var(--muted); }
+      .ok { color: var(--ok); }
+      .warn { color: var(--warn); }
+      .bad { color: var(--danger); }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <!-- Trunk：将根目录 Rust crate 编译为 WASM 并注入页面（无 Node.js 参与） -->
+    <link data-trunk rel="rust" href="." data-wasm-opt="z" />
+  </body>
+</html>
