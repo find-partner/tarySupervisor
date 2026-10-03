@@ -3,9 +3,10 @@
 | 项目 | 内容 |
 |------|------|
 | 产品名称 | TraySupervisor（暂定名） |
-| 版本 | v0.1（草案） |
-| 日期 | 2026-10-02 |
+| 版本 | v0.2（草案） |
+| 日期 | 2026-10-03 |
 | 依据 | [软件需求规格说明书（SRS）](./SRS.md) |
+| 配套文档 | [配置文件规范（CONFIG-SPEC）](./CONFIG-SPEC.md)、[命令行工具规格（CLI-SPEC）](./CLI-SPEC.md) |
 
 ---
 
@@ -13,7 +14,7 @@
 
 ### 1.1 形态
 
-**单进程 Tauri v2 桌面应用**，常驻托盘：
+**单进程 Tauri v2 桌面应用**，常驻托盘。另附 `traysvctl` 命令行工具（P1，[CLI-SPEC](./CLI-SPEC.md)），经本地 IPC（§3.7）控制常驻应用，不引入守护进程：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -30,7 +31,7 @@
 │  ┌──┴─────┐  ┌─────┴─────┐  ┌─────────┴──┐  ┌────┴─────────┐  │
 │  │ config │  │  service  │  │    log     │  │    tray      │  │
 │  │ 模块    │  │  管理器    │  │  管道       │  │ 菜单构建/防抖 │  │
-│  │TOML读写 │  │  状态机     │  │ 环形缓冲    │  └────▲─────────┘  │
+│  │INI读写 │  │  状态机     │  │ 环形缓冲    │  └────▲─────────┘  │
 │  │校验/热载 │  │  spawn/stop│  │ 轮转文件    │       │            │
 │  └────────┘  └─────┬─────┘  │ Matcher    │  ┌────┴─────────┐  │
 │                    │        └─────▲──────┘  │ tray-icon/   │  │
@@ -68,7 +69,9 @@
 | 日志轮转 | `file-rotate` | `ContentLimit::Bytes` + `AppendCount` + `FileLimit::MaxFiles` + 可选压缩 |
 | 正则 | `regex` | 保存期编译校验，失败即拒绝 |
 | 变量替换 | `shellexpand::env_with_context` | 自定义上下文 = 本服务 env 表（有序）→ 系统环境 |
-| 配置 | `toml` + `serde` + `notify`（热加载） | 单文件 `~/.traysupervisor/config.toml` |
+| 配置 | `rust-ini` + `notify`（热加载） | 单文件 `~/.traysupervisor/config.ini`，supervisord 风格 INI（D-8）；规范见 [CONFIG-SPEC](./CONFIG-SPEC.md) |
+| CLI | `clap`（`crates/cli`） | `traysvctl`，supervisorctl 风格；经本地 IPC 控制常驻应用（D-9），见 [CLI-SPEC](./CLI-SPEC.md) |
+| 本地 IPC | JSON-RPC 2.0 over UDS / Named Pipe | CLI 通道（§3.7 `app::ipc`），复用 §4 Command 语义 |
 | 通知 | `tauri-plugin-notification` | P1 |
 
 > 注意：托盘核心库 tray-icon 与 Tauri 的 `tauri::tray` 为同源封装；本项目统一使用 Tauri 层 API，避免双事件循环。若后续脱离 Tauri（如换 egui 路线），`core` 模块不需改动。
@@ -108,7 +111,7 @@ pub struct EnvEntry {
 ```
 
 职责：
-- 加载 / 保存 TOML；**保存前校验**（命令可解析、正则可编译、env UTF-8、`${VAR}` 引用按顺序可解析且无环）。
+- 加载 / 保存 supervisord 风格 INI（编解码层 `rust-ini` → 语义模型，规范见 [CONFIG-SPEC](./CONFIG-SPEC.md)）；**保存前校验**（命令可解析、正则可编译、env UTF-8、`${VAR}` 引用按顺序可解析且无环）。
 - **展开函数** `resolve_env(&ServiceConfig) -> Result<BTreeMap<OsString, OsString>>`：按表顺序构建，`expand=true` 的条目以"当前已构建 map + 系统环境"为上下文执行替换；未定义变量返回错误。
 - 热加载：`notify` 监听文件变更 → 重新加载 → 与运行态 diff → 产出 `ConfigDelta { added, removed, changed }`，由 service 管理器应用（未受影响的服务不重启）。
 
@@ -186,6 +189,13 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 - 页面：服务列表 / 服务编辑（含 env KV 表、Matcher 表）/ 日志查看 / 终端只读视图 / 关于。
 - 与后端交互仅通过 Tauri IPC（下节）；日志与终端视图均为 `listen("log-appended")` 增量渲染，终端视图额外接 `vte` WASM 解析（或后端解析后传渲染指令，见 §5 决策 D-3）。
 
+### 3.7 `app::ipc` — 本地 IPC 服务（CLI 接入，Tauri 层）
+
+- 常驻应用启动时创建端点：Unix `~/.traysupervisor/traysv.sock`（权限 0600）/ Windows `\\.\pipe\traysupervisor-ctl`（ACL 限当前用户）；应用退出时清理。
+- 协议：JSON-RPC 2.0，NDJSON 帧；方法集 = §4.1 Command 的复用 + `reload_config(mode: reread|update)`、`shutdown`、`version`。无服务端主动推送；`tail -f` 以长连接逐行写出 `LogAppended` 增量（唯一流式例外）。
+- 并发：允许多连接；控制命令经与热加载相同的**单写者通道**串行应用（RD-4）；`shutdown` 触发 FR-1.8 退出流程。
+- 安全：命令白名单固定，不提供任意命令执行；`crates/cli` 仅依赖 core 与 IPC 客户端，不含 tauri。
+
 ---
 
 ## 4. IPC 接口设计
@@ -201,6 +211,10 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 | `get_log` | `id, since_index, limit` | `Vec<LogLine>`（历史回放，滚动加载用） |
 | `open_match_url` | `svc_id, hash` | 校验 http/https 后 `tauri-plugin-opener` 打开 |
 | `get_env_resolved_preview` | `ServiceConfig` | 展开后的 env 预览（编辑页"预览"按钮） |
+| `reload_config` | `mode: reread \| update` | `ConfigDelta`（reread 仅报告差异；update 应用差异，语义见 [CLI-SPEC](./CLI-SPEC.md)） |
+| `shutdown` | — | 触发退出流程（FR-1.8：逐个停止运行中服务后退出） |
+
+> 以上 Command 同时经 §3.7 本地 IPC 以 JSON-RPC 暴露给 `traysvctl`（方法名映射见 [CLI-SPEC](./CLI-SPEC.md) §2）。
 
 ### 4.2 Event（后端 → 前端，均来自 broadcast 总线）
 
@@ -224,6 +238,8 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 | D-5 | 停止策略：TERM/CTRL_BREAK → 超时 → 强杀；Windows 全程 Job Object 兜底 | Windows 无信号，树杀必须靠 Job（SRS R3） |
 | D-6 | 日志双 sink（内存必选 + 文件可选），Matcher 在合并器之后 | 关闭文件日志仍可查看；Matcher 与存储解耦 |
 | D-7 | 菜单全量重建 + 300ms 防抖，不做增量更新 | muda/DE 菜单增量 API 不一致，全量重建最可靠；防抖限频（FR-1.6） |
+| D-8 | 配置文件采用 supervisord 相似风格 INI（`[program:<id>]` 分节、字段名对齐、特有功能同风格扩展） | 复用 Supervisor 用户习惯与文档资产；INI 足以表达现有语义模型（environment 有序对 + matcher 编号键）；规范见 [CONFIG-SPEC](./CONFIG-SPEC.md) |
+| D-9 | 新增 `traysvctl` CLI 与本地 IPC 通道（UDS/Named Pipe，JSON-RPC），CLI 与 GUI 共用 `crates/core` | 提供脚本化 / SSH 会话的管理入口；不引入守护进程，CLI 仅是常驻应用的客户端（C3、D-2 不变）；规范见 [CLI-SPEC](./CLI-SPEC.md) |
 
 ---
 
@@ -233,17 +249,20 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 traysupervisor/
 ├── Cargo.toml                # workspace
 ├── crates/
-│   └── core/                 # 纯 Rust 核心（无 tauri 依赖）
-│       └── src/
-│           ├── config/       # 加载/校验/展开/热载
-│           ├── service/      # 状态机、spawn/stop、平台分支
-│           ├── log/          # 合并器/环形缓冲/轮转/Matcher
-│           ├── pty.rs
-│           └── events.rs     # 事件与广播类型
+│   ├── core/                 # 纯 Rust 核心（无 tauri 依赖）
+│   │   └── src/
+│   │       ├── config/       # INI 解析/校验/展开/热载（CONFIG-SPEC）
+│   │       ├── service/      # 状态机、spawn/stop、平台分支
+│   │       ├── log/          # 合并器/环形缓冲/轮转/Matcher
+│   │       ├── pty.rs
+│   │       └── events.rs     # 事件与广播类型
+│   └── cli/                  # traysvctl（clap + IPC 客户端，无 tauri 依赖）
+│       └── src/main.rs
 ├── src-tauri/                # Tauri 壳
 │   └── src/
 │       ├── main.rs / lib.rs
-│       ├── commands.rs       # IPC
+│       ├── commands.rs       # IPC（前端）
+│       ├── ipc.rs            # 本地 IPC 服务（traysvctl 接入，§3.7）
 │       ├── tray.rs           # 菜单构建/防抖/平台开关
 │       └── bridge.rs         # core 事件 → Tauri emit
 ├── src/                      # Leptos 前端（Trunk 构建）
@@ -260,9 +279,10 @@ traysupervisor/
 
 | 平台 | 方式 | 备注 |
 |------|------|------|
-| Windows | Tauri NSIS/MSI | 确认 WebView2 Runtime 存在（Tauri 默认引导安装） |
+| Windows | Tauri NSIS/MSI | 确认 WebView2 Runtime 存在（Tauri 默认引导安装）；产物需代码签名（NFR-10：SAC 强制模式拦截未签名 exe，spike 2026-10-03 验证记录） |
 | macOS | DMG | 公证（notarization）接入 CI |
 | Linux | AppImage + deb | deb 依赖 webkit2gtk-4.1；AppImage 携带说明（GNOME 需扩展） |
+| CLI | `traysvctl` 随各平台安装包附带 | 另提供三平台独立压缩包（[CLI-SPEC](./CLI-SPEC.md) §8） |
 | CI | GitHub Actions 三平台矩阵 | `trunk build` → `tauri build` |
 
 ---
@@ -272,7 +292,8 @@ traysupervisor/
 1. **core 单元测试**：状态机转移表驱动测试；env 展开用例（嵌套引用、未定义、环、非 UTF-8）；Matcher 用例（URL 提取、捕获组模板、上限淘汰）。
 2. **平台集成测试**：Unix 在 CI（Linux/macOS runner）验证 setsid+killpg 树杀；Windows runner 验证 Job Object 树杀（含孙进程，如 `cmd /c start python ...` 场景反例不出现——我们不提供 shell 包装）。
 3. **日志轮转测试**：灌入超限输出验证分块数、总占用、压缩开关。
-4. **手动冒烟矩阵**：Windows 11 / macOS 14 / Ubuntu 24.04（GNOME 含扩展、KDE），覆盖 SRS 全部 P0 验收标准。
+4. **CLI 集成测试**：`traysvctl` 对真实 IPC 的 status/start/stop/restart/退出码矩阵（含"应用未运行"= 3）；`reread`/`update` 差异语义（CONFIG-SPEC §8）。
+5. **手动冒烟矩阵**：Windows 11 / macOS 14 / Ubuntu 24.04（GNOME 含扩展、KDE），覆盖 SRS 全部 P0 验收标准。
 
 ---
 

@@ -3,10 +3,10 @@
 | 项目 | 内容 |
 |------|------|
 | 产品名称 | TraySupervisor（暂定名） |
-| 版本 | v0.1（草案） |
-| 日期 | 2026-10-02 |
+| 版本 | v0.2（草案） |
+| 日期 | 2026-10-03 |
 | 状态 | 已评审技术可行性，进入设计阶段 |
-| 配套文档 | [概要设计文档（HLD）](./HLD.md) |
+| 配套文档 | [概要设计文档（HLD）](./HLD.md)、[配置文件规范（CONFIG-SPEC）](./CONFIG-SPEC.md)、[命令行工具规格（CLI-SPEC）](./CLI-SPEC.md) |
 
 ---
 
@@ -36,6 +36,7 @@
 | 状态机 | 参考 Supervisor 的服务生命周期状态集合（见 FR-3） |
 | Matcher | 对服务日志进行正则匹配并生成菜单快捷项的规则 |
 | 只读终端视图 | 渲染服务 PTY 输出（含 ANSI 转义序列）但不可键入的查看窗口 |
+| CLI（traysvctl） | supervisorctl 风格的命令行管理工具，经本地 IPC 控制常驻应用（见 FR-9） |
 
 ---
 
@@ -49,6 +50,7 @@
 4. 日志：内存环形缓冲 + 可选文件保存（按大小轮转分块）。
 5. 日志正则提取 → 菜单快捷项（如"在浏览器打开 http://localhost:3000"）。
 6. 只读终端视图：关闭窗口不影响服务运行。
+7. `traysvctl` 命令行工具（P1）：脚本化查询与控制（status / start / stop / restart / tail / reread / update / shutdown，见 FR-9）。
 
 ### 2.2 运行环境
 
@@ -66,6 +68,7 @@
 - C4：终端视图 MVP 为**只读**（PTY 由本工具持有，关闭视图不影响服务）；stdin 交互预留接口，二期实现。
 - C5：MVP 不管理系统原生服务，不做提权。
 - C6：环境变量替换仅支持 `${VAR}` 语法（Windows `%VAR%` 风格不支持）。
+- C7：配置文件格式采用**与 supervisord 相似的 INI 风格**（`[program:<id>]` 分节、字段名与语义对齐），以复用 Supervisor 用户习惯；规范见 [CONFIG-SPEC](./CONFIG-SPEC.md)。
 
 ---
 
@@ -98,7 +101,7 @@
 | FR-2.3 | 环境变量以 KV 表格逐行添加/编辑/删除；每行有独立开关 `expand`（是否启用变量替换）：开启时值中的 `${VAR}` 按规则替换（先查本服务 env 表，再查系统环境；未定义 → 校验错误并阻止保存/启动）；关闭时值按字面量传递，不做任何解析与转义 |
 | FR-2.4 | 保存时进行校验：命令非空且可解析、正则可编译（Matcher）、env 值必须 UTF-8、替换开启时 `${VAR}` 引用可解析、无循环引用；校验错误逐项展示并阻止保存 |
 | FR-2.5 | 保存后服务立即出现在托盘菜单中；删除服务时若在运行则先停止（需确认） |
-| FR-2.6 | 配置持久化为单文件（TOML），路径：`~/.traysupervisor/config.toml`（Windows 为 `%USERPROFILE%\.traysupervisor\config.toml`）；支持手动编辑后热加载（检测文件变更并 diff 应用，不重启未受影响的服务） |
+| FR-2.6 | 配置持久化为单文件，格式采用**与 supervisord 相似的 INI 风格**（`[program:<id>]` 分节，C7），路径：`~/.traysupervisor/config.ini`（Windows 为 `%USERPROFILE%\.traysupervisor\config.ini`）；完整格式规范见 [配置文件规范（CONFIG-SPEC）](./CONFIG-SPEC.md)。支持手动编辑后热加载（检测文件变更并 diff 应用，不重启未受影响的服务；校验失败时沿用上一次有效配置并提示） |
 
 **验收标准**：KV 表逐行添加 3 个环境变量（其中 1 行开启替换引用另一行）后保存并启动服务，子进程环境正确；`${UNDEFINED_VAR}` 在保存时被拦截。
 
@@ -164,6 +167,19 @@
 
 注册表（Windows）/ launchd Agent（macOS）/ XDG autostart（Linux），设置窗口内开关。
 
+### FR-9 命令行工具 traysvctl（P1）
+
+supervisorctl 风格的命令行管理工具，完整规格见 [命令行工具规格（CLI-SPEC）](./CLI-SPEC.md)。
+
+| 编号 | 需求 |
+|------|------|
+| FR-9.1 | 提供 `traysvctl`，子命令至少覆盖：`status`、`start`、`stop`、`restart`（均支持 `all`）、`tail [-f]`、`reread`、`update`、`shutdown`、`version`、`validate` |
+| FR-9.2 | CLI 经本地 IPC（Unix domain socket / Windows named pipe，仅当前用户可访问）与常驻托盘应用通信，复用 HLD §4 Command 语义；不引入守护进程（C3 不变，CLI 仅是常驻应用的客户端） |
+| FR-9.3 | 常驻应用未运行时，各子命令的行为与退出码按 CLI-SPEC §5/§6 定义 |
+| FR-9.4 | `status` 输出的状态集合与 FR-1.5 一致并含 PID；`validate` 离线校验配置文件并逐项报告错误（与 FR-2.4 同一校验规则） |
+
+**验收标准**：应用运行 2 个服务时，`traysvctl status` 正确显示状态与 PID；`traysvctl stop all` 后托盘菜单与 `status` 均显示 STOPPED；关闭应用后 `traysvctl status` 退出码为 3。
+
 ---
 
 ## 4. 非功能需求
@@ -179,6 +195,7 @@
 | NFR-7 兼容性 | 平台矩阵 | Windows 10/11、macOS 12+、Linux（GNOME/KDE 及主流 DE）；GNOME 无扩展时给出明确降级提示（通知 + 菜单不可用说明） |
 | NFR-8 可维护性 | 模块边界 | 核心逻辑（进程/日志/配置）不依赖 Tauri，可独立单元测试 |
 | NFR-9 国际化 | 界面语言 | MVP 中文；文案集中管理预留 i18n |
+| NFR-10 安全 | Windows 代码签名 | 正式发布产物必须代码签名：SAC（Smart App Control）强制模式下未签名 exe 首次运行可能被拦截（spike 验证记录 2026-10-03，见 `spikes/README.md`） |
 
 ---
 
@@ -210,7 +227,7 @@
 ## 7. 验收与交付
 
 - MVP 验收 = 全部 P0 需求的验收标准通过 + 三平台手动冒烟（Windows 11、macOS 14、Ubuntu 24.04 GNOME/KDE）。
-- 交付物：安装包（Windows: NSIS/MSI；macOS: dmg；Linux: AppImage + deb）、配置文件示例、README。
+- 交付物：安装包（Windows: NSIS/MSI；macOS: dmg；Linux: AppImage + deb；Windows 产物需代码签名，见 NFR-10）、`traysvctl` 命令行工具（随安装包附带，见 FR-9）、配置文件示例（见 [CONFIG-SPEC](./CONFIG-SPEC.md)）、README。
 
 ---
 
