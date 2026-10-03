@@ -62,7 +62,7 @@
 | 前端 | Leptos（或 Yew）+ Trunk | Rust→WASM，零 Node；`withGlobalTauri = true` |
 | 托盘菜单 | `tauri::tray`（底层 tray-icon/muda） | 动态 `set_menu` 重建；`show_menu_on_left_click` 配置 |
 | 异步运行时 | tokio | 进程管理、日志读取、事件广播 |
-| 进程停止 | Unix：`libc::killpg`（setsid 进程组）；Windows：Job Object（`CREATE_SUSPENDED` + `AssignToJobObject`，`win32job` 或手写 `windows-sys` 绑定） | 兜底 `kill_tree` |
+| 进程停止 | Unix：`libc::killpg`（setsid 进程组）；Windows：Job Object（`CREATE_SUSPENDED` + `AssignToJobObject`，手写 `windows-sys` 绑定，spike 已验证） | 兜底 `kill_tree` |
 | PTY | `portable-pty`（WezTerm 生态） | 仅 PTY 启动模式加载 |
 | 终端解析 | `vte` + 自研轻量渲染（只读） | 交互式终端 widget（egui_term 等）不在 MVP |
 | 日志轮转 | `file-rotate` | `ContentLimit::Bytes` + `AppendCount` + `FileLimit::MaxFiles` + 可选压缩 |

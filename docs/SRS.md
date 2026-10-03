@@ -197,7 +197,7 @@
 |----|------|------|---------|------|
 | R1 | macOS 无原生左右键区分 | 高 | 已决策：不做左右键配置（C2），单击弹菜单 | 已闭环 |
 | R2 | GNOME 默认无托盘支持 | 高 | 启动检测 + 明确提示安装 AppIndicator 扩展；文档声明支持矩阵 | 设计规避 |
-| R3 | Windows 优雅停止困难 | 高 | Job Object + CTRL_BREAK 尝试 + 超时强杀 + 可配 stop_timeout | 设计规避 |
+| R3 | Windows 优雅停止困难 | 高 | Job Object + CTRL_BREAK 尝试 + 超时强杀 + 可配 stop_timeout | Spike 已验证（2026-10-03，`spikes/windows/job-object-kill-tree`） |
 | R4 | 管理系统服务需提权 | 高 | MVP 明确排除（C5），二期单独立项 | 范围规避 |
 | R5 | 日志块缓冲延迟（非 TTY 全缓冲） | 中 | 提供 PTY 模式（默认管道，文档建议关键服务用 PTY） | 设计规避 |
 | R6 | 终端渲染 widget 在 Windows 未验证 | 中 | MVP 仅只读渲染（自实现 vte 解析），交互终端二期实测后启用 | 设计规避 |

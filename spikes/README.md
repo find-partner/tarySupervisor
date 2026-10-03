@@ -7,7 +7,7 @@
 | 目录 | 平台 | 验证目标 | 状态 |
 |------|------|---------|------|
 | `cross-platform/tauri-leptos/` | macOS / Linux / Windows | ① Tauri v2 + Leptos（Rust→WASM，零 Node）组合可编译可运行；② `withGlobalTauri` 下前端经 `window.__TAURI__.core.invoke` 调通 Rust command；③ `tauri::tray` 托盘 + 动态菜单创建 | 本机已验证 |
-| `windows/job-object-kill-tree/` | 仅 Windows | Job Object（KILL_ON_JOB_CLOSE）对"cmd → cmd → ping"三层进程链整树终止（SRS FR-3.3 / HLD D-5 的核心机制） | 代码就绪，待 Windows 机器运行 |
+| `windows/job-object-kill-tree/` | 仅 Windows | Job Object（KILL_ON_JOB_CLOSE）对"cmd → cmd → ping"三层进程链整树终止（SRS FR-3.3 / HLD D-5 的核心机制） | 本机已验证 |
 
 ## Spike 1：Tauri v2 + Leptos（跨平台）
 
@@ -41,3 +41,9 @@ cargo run --release
 预期末尾输出 `[RESULT] PASS`（终止前 ping.exe ≥1 个，终止后 = 0）。
 
 > 原理：`CREATE_SUSPENDED` 创建 → 绑定 Job Object → `ResumeThread`，保证子进程无逃逸窗口；`TerminateJobObject` 覆盖 cmd/孙进程全部成员。对应产品实现中"停止服务"的强杀兜底路径。
+
+### 验证记录（2026-10-03，Windows 11 x64）
+
+- `cargo run --release` 一次通过，末尾输出 `[RESULT] PASS`（终止前 ping.exe = 1，`TerminateJobObject` 后 = 0，退出码 0）；多次重复运行均稳定 PASS，无残留 ping/timeout 进程。
+- 结论：`CREATE_SUSPENDED` → 绑定 Job → `ResumeThread` 时序下，孙进程（内层 cmd 的 `ping -t`）随 Job 整树终止，无逃逸窗口。SRS FR-3.3 的 Windows 强杀兜底路径成立，可按此设计落地。
+- 环境备注：本机 Smart App Control 处于强制模式，新编译的未签名 exe **首次运行可能被拦截**（os error 4551「应用程序控制策略已阻止此文件」，或「已被组织的 Device Guard 策略阻止」）；等待数分钟（云端信誉建立）后重试即可正常运行，无需关闭 SAC。若开发机普遍如此，正式发布产物的代码签名是硬性前提（见 NFR/发布流程）。
