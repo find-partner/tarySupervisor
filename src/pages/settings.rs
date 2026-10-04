@@ -31,8 +31,6 @@ struct FormState {
     log_max_files: String,
     log_compress: bool,
     matchers: Vec<MatcherConfig>,
-    /// 新建（id 可编辑）还是编辑已有服务
-    is_new: bool,
 }
 
 fn form_from_brief(b: &ServiceBriefOut) -> FormState {
@@ -74,7 +72,6 @@ fn form_from_brief(b: &ServiceBriefOut) -> FormState {
             .unwrap_or_else(|| "3".into()),
         log_compress: b.config.log.file.as_ref().map(|f| f.compress).unwrap_or(false),
         matchers: b.config.matchers.clone(),
-        is_new: false,
     }
 }
 
@@ -126,7 +123,6 @@ fn blank_form() -> FormState {
         log_max_files: "3".into(),
         log_compress: false,
         matchers: vec![],
-        is_new: true,
     }
 }
 
