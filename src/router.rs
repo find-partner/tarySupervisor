@@ -3,6 +3,7 @@
 
 use crate::pages;
 use leptos::*;
+use wasm_bindgen::JsCast;
 
 #[component]
 fn App() -> impl IntoView {
@@ -21,5 +22,16 @@ fn App() -> impl IntoView {
 
 pub fn run() {
     console_error_panic_hook::set_once();
-    mount_to_body(|| view! { <App /> });
+
+    // 挂载到 index.html 预置的 #app（height:100%）。此前用 mount_to_body：UI 成为
+    // 占满整屏的 #app 的后继兄弟节点，被推到视口之外，导致设置/日志/终端窗口白屏。
+    let app_el = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id("app"))
+        .map(|el| el.unchecked_into::<web_sys::HtmlElement>());
+
+    match app_el {
+        Some(el) => mount_to(el, || view! { <App /> }),
+        None => mount_to_body(|| view! { <App /> }),
+    }
 }

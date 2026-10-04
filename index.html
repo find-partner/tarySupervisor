@@ -119,6 +119,34 @@
       .warn { color: var(--warn); }
       .bad { color: var(--danger); }
     </style>
+    <script>
+      // 兜底诊断：托盘应用里 WebView 控制台不可见，把 JS 错误 / 资源加载失败 /
+      // 未处理的 Promise 拒绝显示到页面底部（红色横幅）。正常运行时不会触发。
+      (function () {
+        function report(kind, msg) {
+          var text = kind + ': ' + String(msg).slice(0, 600);
+          try {
+            document.title = text;
+            var el = document.createElement('pre');
+            el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;margin:0;padding:8px;background:#fee;color:#c00;white-space:pre-wrap;font:11px/1.4 monospace;';
+            el.textContent = text;
+            (document.body || document.documentElement).appendChild(el);
+          } catch (_) {}
+        }
+        // capture=true 才能捕获 <script>/<link> 等资源加载失败（不冒泡）
+        window.addEventListener('error', function (e) {
+          if (e.target && e.target !== window) {
+            report('资源加载失败', (e.target.tagName || '') + ' ' + (e.target.src || e.target.href || ''));
+          } else {
+            report('JS错误', (e.message || '') + ' @ ' + String(e.filename || '').split('/').pop() + ':' + (e.lineno || ''));
+          }
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e.reason;
+          report('Promise拒绝', (r && (r.stack || r.message)) || r);
+        });
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>
