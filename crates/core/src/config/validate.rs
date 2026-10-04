@@ -1,7 +1,7 @@
 //! 配置校验（CONFIG-SPEC §7 / SRS FR-2.4）：加载与保存均执行，错误逐项输出。
 
 use super::{
-    resolve_env, AppConfig, ServiceConfig, BUILTIN_URL_PATTERN, BUILTIN_URL_TEMPLATE,
+    resolve_env, AppConfig, ServiceConfig, SpawnMode, BUILTIN_URL_PATTERN, BUILTIN_URL_TEMPLATE,
 };
 use regex::Regex;
 use std::collections::HashSet;
@@ -70,6 +70,9 @@ pub fn validate_service(svc: &ServiceConfig) -> Vec<String> {
     // 数值范围（CONFIG-SPEC §7.3）
     if svc.stop_timeout_secs < 1 {
         errors.push(format!("{tag} stopwaitsecs 必须 ≥ 1"));
+    }
+    if svc.term_interactive && svc.spawn_mode != SpawnMode::Pty {
+        errors.push(format!("{tag} term_interactive 需要 spawn_mode=pty（管道模式不支持输入）"));
     }
     if svc.startretries > START_RETRIES_MAX {
         errors.push(format!("{tag} startretries 必须 0–{}", START_RETRIES_MAX));

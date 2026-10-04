@@ -176,6 +176,9 @@ fn parse_program(
     if let Some(v) = get("redirect_stderr") {
         svc.redirect_stderr = parse_bool(v, &format!("[{section_name}] redirect_stderr"))?;
     }
+    if let Some(v) = get("term_interactive") {
+        svc.term_interactive = parse_bool(v, &format!("[{section_name}] term_interactive"))?;
+    }
     if let Some(v) = get("environment") {
         svc.env = parse_environment(v).map_err(|e| format!("[{section_name}] environment：{e}"))?;
     }
@@ -211,7 +214,7 @@ fn parse_program(
     // 未知键检测（CONFIG-SPEC §1/§7.7）：先收集 matcher.*，其余必须命中已知键
     const KNOWN_KEYS: &[&str] = &[
         "name", "command", "directory", "autostart", "autorestart", "startsecs", "startretries",
-        "stopwaitsecs", "environment", "redirect_stderr", "stdout_logfile",
+        "stopwaitsecs", "environment", "redirect_stderr", "stdout_logfile", "term_interactive",
         "stdout_logfile_maxbytes", "stdout_logfile_backups", "spawn_mode", "logfile_compress",
     ];
     let mut matcher_raw: std::collections::BTreeMap<u32, (Option<String>, Option<String>, Option<u32>)> =
@@ -324,6 +327,9 @@ pub fn to_ini_string(cfg: &AppConfig) -> String {
         }
         if svc.redirect_stderr {
             out.push_str("redirect_stderr=true\n");
+        }
+        if svc.term_interactive {
+            out.push_str("term_interactive=true\n");
         }
         if !svc.env.is_empty() {
             out.push_str(&format!("environment={}\n", serialize_environment(&svc.env)));

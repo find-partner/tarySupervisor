@@ -54,6 +54,7 @@
 |----|------|------|------|---------|
 | name | string | = id | 菜单与 CLI 中的显示名 | FR-2.1 |
 | spawn_mode | enum | pipe | `pipe`（管道捕获）/ `pty`（伪终端捕获，启用只读终端视图 FR-6） | FR-2.1 / FR-6 |
+| term_interactive | bool | false | 终端视图**可写（交互）**：键盘/粘贴输入转发至服务 stdin；仅 `spawn_mode=pty` 有效，否则校验错误 | FR-6.4 |
 | logfile_compress | bool | false | 轮转出的旧分块 gzip 压缩 | FR-2.2 |
 | matcher.N.pattern | regex | — | 第 N 条 Matcher 正则（Rust regex 语法），N 从 1 连续递增，顺序即匹配顺序 | FR-5.1 |
 | matcher.N.template | string | `🌐 打开 {0}` | 快捷项文案，`{0} {1}` 引用捕获组 | FR-5.1 |
@@ -150,7 +151,8 @@ redirect_stderr=false
 4. Matcher 正则可编译；`matcher.N` 编号连续；
 5. environment 值必须 UTF-8；开启替换的值中 `${VAR}` 引用可解析（本表顺序 + 系统环境）且无环；
 6. 枚举值合法（`autorestart`、`spawn_mode`、bool 取 `true`/`false`）；
-7. 未知键报错（见 §1）。
+7. `term_interactive=true` 时 `spawn_mode` 必须为 `pty`；
+8. 未知键报错（见 §1）。
 
 ## 8. 热加载行为（FR-2.6 / HLD RD-4）
 

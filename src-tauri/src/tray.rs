@@ -39,14 +39,22 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(TrayHandle { tray });
 
     // 事件 → 防抖重建（FR-1.6：≤300ms 内多次变更合并为一次重建）
+    // 仅 状态变更 / Matcher 命中 / 配置变更 触发重建；LogAppended / TermFrame 等
+    // 高频事件与菜单无关（如 ping 每秒一行输出曾导致菜单每秒重建）
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut rx = mgr.events();
         let needs = Arc::new(AtomicBool::new(false));
         let inflight = Arc::new(AtomicBool::new(false));
         loop {
-            if rx.recv().await.is_err() {
-                break;
+            match rx.recv().await {
+                Ok(ev) => match ev {
+                    traysupervisor_core::events::CoreEvent::StateChanged { .. }
+                    | traysupervisor_core::events::CoreEvent::MatcherHit { .. }
+                    | traysupervisor_core::events::CoreEvent::ConfigChanged { .. } => {}
+                    _ => continue,
+                },
+                Err(_) => break,
             }
             needs.store(true, Ordering::SeqCst);
             if inflight.swap(true, Ordering::SeqCst) {

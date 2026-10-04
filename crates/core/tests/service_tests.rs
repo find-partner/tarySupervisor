@@ -297,3 +297,93 @@ fn hot_reload_applies_diff() {
     assert_eq!(a.state, SvcState::Stopped, "热载 added/未受影响服务不自动启动");
     mgr.shutdown_all();
 }
+
+/// SRS FR-6.4：交互终端——write_stdin 转发至 PTY master，cat 的行规程回显进日志。
+#[test]
+fn interactive_term_stdin_write() {
+    let cfg = traysupervisor_core::config::AppConfig {
+        services: vec![ServiceConfig {
+            term_interactive: true,
+            spawn_mode: SpawnMode::Pty,
+            startsecs: 0,
+            ..svc("t-rw", "/bin/cat", &[])
+        }],
+        ..Default::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = ServiceManager::new(cfg, dir.path().join("config.ini")).unwrap();
+    mgr.start("t-rw").unwrap();
+    assert!(wait_state(&mgr, "t-rw", SvcState::Running, Duration::from_secs(5)));
+
+    mgr.write_stdin("t-rw", b"hello-stdin\n".to_vec()).unwrap();
+    assert!(
+        wait_pred(
+            || mgr
+                .get_log("t-rw", 0, 200)
+                .unwrap_or_default()
+                .iter()
+                .any(|l| l.text.contains("hello-stdin")),
+            Duration::from_secs(3)
+        ),
+        "stdin 回显未进入日志（write_stdin → PTY 链路不通）"
+    );
+
+    // 不存在的服务 → 错误
+    assert!(mgr.write_stdin("no-such", b"x".to_vec()).is_err());
+
+    // 停止后写端清空 → 错误
+    mgr.stop("t-rw").unwrap();
+    assert!(wait_state(&mgr, "t-rw", SvcState::Stopped, Duration::from_secs(3)));
+    assert!(
+        mgr.write_stdin("t-rw", b"x".to_vec()).is_err(),
+        "停止后 write_stdin 应报错（写端已清空）"
+    );
+    mgr.shutdown_all();
+}
+
+/// SRS FR-2.10：GUI 保存语义——apply_saved_config 对 RUNNING 服务只换配置、不重启。
+#[test]
+fn apply_saved_config_does_not_restart_running_service() {
+    let cfg = traysupervisor_core::config::AppConfig {
+        services: vec![ServiceConfig {
+            startsecs: 0,
+            ..svc("t-keep", "/bin/sleep", &["30"])
+        }],
+        ..Default::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.ini");
+    traysupervisor_core::config::save_app_config(&cfg, &path).unwrap();
+    let mgr = ServiceManager::new(cfg.clone(), path.clone()).unwrap();
+    mgr.start("t-keep").unwrap();
+    assert!(wait_state(&mgr, "t-keep", SvcState::Running, Duration::from_secs(3)));
+    let pid_before = mgr.list()[0].pid;
+
+    // 修改 command（hard change）后写盘 + apply_saved_config：不重启 → PID 不变
+    let mut new_cfg = cfg.clone();
+    new_cfg.services[0].args = vec!["29".to_string()];
+    traysupervisor_core::config::save_app_config(&new_cfg, &path).unwrap();
+    let delta = mgr.apply_saved_config().unwrap();
+    assert_eq!(delta.changed, vec!["t-keep".to_string()]);
+    assert!(
+        wait_pred(
+            || mgr.list()[0].pid == pid_before,
+            Duration::from_millis(500)
+        ),
+        "apply_saved_config 不应重启运行中的服务"
+    );
+
+    // 显式重启后才生效（等待新进程，避免把重启前旧进程的 RUNNING 当作已重启）
+    mgr.restart("t-keep").unwrap();
+    assert!(
+        wait_pred(
+            || {
+                let b = &mgr.list()[0];
+                b.state == SvcState::Running && b.pid.is_some() && b.pid != pid_before
+            },
+            Duration::from_secs(5)
+        ),
+        "显式重启后 PID 应变化"
+    );
+    mgr.shutdown_all();
+}

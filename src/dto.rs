@@ -80,6 +80,9 @@ pub struct ServiceConfigDto {
     pub stop_timeout_secs: u64,
     #[serde(default)]
     pub spawn_mode: String,
+    /// 终端视图可写（交互，仅 Pty 有效，SRS FR-6.4）
+    #[serde(default)]
+    pub term_interactive: bool,
     #[serde(default)]
     pub log: LogPolicyDto,
     #[serde(default)]
@@ -104,9 +107,12 @@ pub struct MatchItem {
 }
 
 /// src-tauri list_services 返回（brief 扁平化 + command_line）
+///
+/// 注意：`config` 为**嵌套**对象（与 core `ServiceBrief` 逐字段对齐，HLD D-14）。
+/// 曾误用 `#[serde(flatten)]`：serde 对嵌套对象静默降级为默认值（全部字段为空），
+/// 导致列表无名、编辑不回显且无任何报错——禁用 flatten。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServiceBriefOut {
-    #[serde(flatten)]
     pub config: ServiceConfigDto,
     pub state: String,
     pub pid: Option<u32>,
@@ -162,6 +168,7 @@ pub struct ServiceInput {
     pub startretries: u32,
     pub stopwaitsecs: u64,
     pub spawn_mode: String,
+    pub term_interactive: bool,
     pub log_file_enabled: bool,
     pub log_path: Option<String>,
     pub log_max_bytes: u64,

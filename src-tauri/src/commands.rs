@@ -32,6 +32,9 @@ pub struct ServiceInput {
     pub startretries: u32,
     pub stopwaitsecs: u64,
     pub spawn_mode: String,
+    /// 终端视图可写（交互，仅 Pty 有效，SRS FR-6.4）
+    #[serde(default)]
+    pub term_interactive: bool,
     pub log_file_enabled: bool,
     pub log_path: Option<String>,
     pub log_max_bytes: u64,
@@ -118,6 +121,7 @@ fn build_service_config(input: &ServiceInput) -> Result<ServiceConfig, Vec<Strin
         startretries: input.startretries,
         stop_timeout_secs: input.stopwaitsecs.max(1),
         spawn_mode: parse_spawn_mode(&input.spawn_mode),
+        term_interactive: input.term_interactive,
         log: LogPolicy {
             file: if input.log_file_enabled {
                 input.log_path.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(|p| LogFilePolicy {
@@ -185,10 +189,11 @@ pub fn upsert_service(state: State<'_, AppState>, input: ServiceInput) -> Result
         return Err(errors);
     }
 
-    // 写文件 → 热载应用（removed 停止移除 / changed 重启语义复用 CONFIG-SPEC §8）
+    // 写文件 → GUI 保存语义（SRS FR-2.10）：应用配置但不自动重启运行中服务，
+    // 重启由前端"需重启生效"提示显式触发（HLD D-10）
     traysupervisor_core::config::save_app_config(&cfg, mgr.config_path())
         .map_err(|e| vec![e])?;
-    mgr.reload_from_file().map(|_| ())
+    mgr.apply_saved_config().map(|_| ())
 }
 
 #[tauri::command]
@@ -278,6 +283,12 @@ pub fn reload_config(
 #[tauri::command]
 pub fn term_snapshot(state: State<'_, AppState>, id: String) -> Option<TermScreen> {
     state.mgr.term_snapshot(&id)
+}
+
+/// 交互终端输入转发（SRS FR-6.4）：键盘/粘贴字节 → PTY master
+#[tauri::command]
+pub fn write_stdin(state: State<'_, AppState>, id: String, data: Vec<u8>) -> Result<(), String> {
+    state.mgr.write_stdin(&id, data)
 }
 
 #[tauri::command]

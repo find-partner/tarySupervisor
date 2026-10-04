@@ -22,7 +22,9 @@
 | FR-3 平台停止策略 | ✅ | `crates/core/src/service/platform.rs`（Unix：`setsid`+`killpg`；Windows：`CREATE_SUSPENDED`+Job Object(KILL_ON_JOB_CLOSE)+`TerminateJobObject`，spike 已验证时序） |
 | FR-4 日志 | ✅ | `crates/core/src/log/`（环形缓冲默认 2000 行、file-rotate 按字节轮转 `.1 .2 …`、gzip、64KB 行截断、UTF-8 lossy）+ 日志窗口（自动滚动/暂停/复制/清空/打开目录） |
 | FR-5 Matcher 快捷项 | ✅ | `crates/core/src/matcher.rs`（流式匹配、结果哈希去重、每条 max_items LRU、内置 HTTP URL 规则、http/https 校验；服务重启清空） |
-| FR-6 只读终端视图 | ✅ | `crates/core/src/term.rs`（后端 vte 解析：SGR 颜色/加粗/反显、CUP、ED/EL、CR 进度条重写等）+ 终端窗口（黑底只读，关窗不影响服务）；管道模式退化为纯文本流 |
+| FR-6 终端视图 | ✅ | `crates/core/src/term.rs`（后端 vte 解析：SGR 颜色/加粗/反显、CUP、ED/EL、CR 进度条重写等）+ 终端窗口（黑底，关窗不影响服务）；管道模式退化为纯文本流 |
+| FR-6.4/6.5 交互（读写）终端 | ✅ | 每服务 `term_interactive` 配置开关（仅 Pty）；键盘/粘贴输入按 ANSI 字节转发 `write_stdin`→PTY master，行编辑交给子进程行规程；窗口内只读/可写开关 |
+| FR-2A 设置页交互 | ✅ | 空态引导、四标签页分组（基本/环境变量/日志/快捷项）每页独立保存、新建 step-by-step 向导、保存后"需重启生效"提示 + 立即重启（FR-2.7~2.10） |
 | FR-3.7 退出清理 | ✅ | SIGTERM/SIGINT 处理 + `RunEvent::ExitRequested` → `shutdown_all()`（本机冒烟验证：托盘应用退出后托管子进程无残留） |
 | FR-9 traysvctl CLI（P1） | ⬜ 未实现 | 属首个正式版范围，规格已定（CLI-SPEC） |
 | FR-7 通知 / FR-8 开机自启（P1/P2） | ⬜ 未实现 | 模型字段已预留（`notify_on_failure`） |

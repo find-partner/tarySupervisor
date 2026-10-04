@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 产品名称 | TraySupervisor（暂定名） |
-| 版本 | v0.2（草案） |
-| 日期 | 2026-10-03 |
+| 版本 | v0.3（草案） |
+| 日期 | 2026-10-04 |
 | 依据 | [软件需求规格说明书（SRS）](./SRS.md) |
 | 配套文档 | [配置文件规范（CONFIG-SPEC）](./CONFIG-SPEC.md)、[命令行工具规格（CLI-SPEC）](./CLI-SPEC.md) |
 
@@ -99,6 +99,7 @@ pub struct ServiceConfig {
     pub autorestart: Autorestart,        // No | OnFailure | Always
     pub stop_timeout_secs: u64,          // 默认 10
     pub spawn_mode: SpawnMode,           // Pipe | Pty
+    pub term_interactive: bool,          // 终端视图可写（交互，默认 false；仅 Pty 有效，SRS FR-6.4）
     pub log: LogPolicy,
     pub matchers: Vec<MatcherConfig>,
 }
@@ -147,6 +148,7 @@ RUNNING ──意外退出──► EXITED ──autorestart=OnFailure/Always─
   4. 超时强杀：Unix `killpg(SIGKILL)`；Windows `TerminateJobObject`；
   5. 回收（wait）→ 置 STOPPED，记录退出码与停止原因。
 - 应用退出钩子：遍历运行态执行 stop 流程（detach 配置项跳过，P1）。
+- **GUI 保存语义（SRS FR-2.10）**：`upsert_service` 保存文件后调用 `apply_saved_config()`——加载新配置、应用 added/removed 与日志/Matcher 即时更新，但 **changed 的运行中服务只换配置、不自动重启**；重启由用户在"配置已保存——需重启生效"提示中显式触发。文件 watcher 的外部编辑路径仍按 CONFIG-SPEC §8 自动重启；GUI 保存后 2s 内的 watcher 事件按"自写回声"抑制（`last_self_save` 时间戳）。
 
 ### 3.3 `core::log` — 日志管道
 
@@ -167,6 +169,7 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 
 - 封装 `portable-pty`：`open_pty(size) → (master_reader, master_writer, child)`。
 - **PTY master 生命周期 = 服务生命周期**，与任何视图窗口无关；视图（前端）只是订阅 `LogAppended` 的一个客户端（FR-6.2）。
+- **输入通道（SRS FR-6.4，已启用）**：`RunCtx.pty_writer` 挂到 `SvcCtx`（`Arc<Mutex<Option<Box<dyn Write + Send>>>>`），spawn 成功时写入、进程退出时清空；`ServiceManager::write_stdin(id, bytes)` 加锁 `write_all + flush`（None = 未运行或非 PTY）。前端在 `term_interactive` 服务的终端窗口监听键盘/粘贴事件按字节转发（行编辑交给子进程行规程）。
 - PTY 输出同时进日志管道（时间戳、Matcher、环形缓冲同管道模式），即"终端视图"与"日志"共享数据源，仅在渲染层区分（是否走 vte 解析）。
 - MVP 输入通道预留 `master_writer` 但不暴露 UI。
 
@@ -186,8 +189,15 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 
 ### 3.6 前端（Leptos，WASM）
 
-- 页面：服务列表 / 服务编辑（含 env KV 表、Matcher 表）/ 日志查看 / 终端只读视图 / 关于。
+- 页面：服务列表 / 服务编辑（含 env KV 表、Matcher 表）/ 日志查看 / 终端视图 / 关于。
 - 与后端交互仅通过 Tauri IPC（下节）；日志与终端视图均为 `listen("log-appended")` 增量渲染，终端视图额外接 `vte` WASM 解析（或后端解析后传渲染指令，见 §5 决策 D-3）。
+- **设置页三态（SRS FR-2.7~2.9）**：
+  - **空态**：未选中且未新建 → 编辑区显示产品简介 + "请新建配置"引导，无表单；
+  - **编辑模式**：按标签页分组（基本设置 / 环境变量 / 日志 / 快捷项），每页独立"保存本页"（以整份配置快照合并提交 upsert），未保存变更在标签上标记"未保存"，切换页面不隐式保存；
+  - **新建向导**：① 基本设置 → ② 环境变量 → ③ 日志 → ④ 快捷项，可上一步/跳过，最后"保存并完成"；ID 与命令行非空方可离开第①步。
+- **保存生效提示（SRS FR-2.10）**：保存成功后若服务 RUNNING/STARTING → 编辑区横幅"需重启生效" + "立即重启"按钮（`restart_service`）。
+- **列表/编辑回显一致性**：`list_services` 返回的 brief 以**嵌套** `config` 对象反序列化（前端 DTO 与 core `ServiceBrief` 形状一一对应；禁用 flatten —— 曾因 flatten 误配导致列表无名、编辑空白，见 D-14）。
+- **终端读写（SRS FR-6.4/6.5）**：`term_interactive && Pty` 的服务在终端窗口提供"只读/可写"开关与键盘/粘贴输入转发（`write_stdin`），控制序列按 ANSI 字节直传。
 
 ### 3.7 `app::ipc` — 本地 IPC 服务（CLI 接入，Tauri 层）
 
@@ -213,6 +223,7 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 | `get_env_resolved_preview` | `ServiceConfig` | 展开后的 env 预览（编辑页"预览"按钮） |
 | `reload_config` | `mode: reread \| update` | `ConfigDelta`（reread 仅报告差异；update 应用差异，语义见 [CLI-SPEC](./CLI-SPEC.md)） |
 | `shutdown` | — | 触发退出流程（FR-1.8：逐个停止运行中服务后退出） |
+| `write_stdin` | `id, data: Vec<u8>` | 转发至 PTY master（`term_interactive` 服务；非 Pty/未运行报错） |
 
 > 以上 Command 同时经 §3.7 本地 IPC 以 JSON-RPC 暴露给 `traysvctl`（方法名映射见 [CLI-SPEC](./CLI-SPEC.md) §2）。
 
@@ -240,6 +251,10 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 | D-7 | 菜单全量重建 + 300ms 防抖，不做增量更新 | muda/DE 菜单增量 API 不一致，全量重建最可靠；防抖限频（FR-1.6） |
 | D-8 | 配置文件采用 supervisord 相似风格 INI（`[program:<id>]` 分节、字段名对齐、特有功能同风格扩展） | 复用 Supervisor 用户习惯与文档资产；INI 足以表达现有语义模型（environment 有序对 + matcher 编号键）；规范见 [CONFIG-SPEC](./CONFIG-SPEC.md) |
 | D-9 | 新增 `traysvctl` CLI 与本地 IPC 通道（UDS/Named Pipe，JSON-RPC），CLI 与 GUI 共用 `crates/core` | 提供脚本化 / SSH 会话的管理入口；不引入守护进程，CLI 仅是常驻应用的客户端（C3、D-2 不变）；规范见 [CLI-SPEC](./CLI-SPEC.md) |
+| D-10 | GUI 保存**不自动重启**运行中服务：`apply_saved_config` 只换配置，前端提示"需重启生效"+ 显式重启按钮；文件 watcher 的外部编辑路径仍自动重启（CONFIG-SPEC §8），GUI 自写回声 2s 抑制 | 编辑期反复保存不应打断服务；把"何时生效"的决定权交给用户（SRS FR-2.10） |
+| D-11 | 交互终端 opt-in（`term_interactive` 默认关、仅 Pty）：输入按字节直传 PTY master，行编辑交给子进程行规程，窗口内提供只读/可写运行时开关 | 误输入风险默认关闭；不做本地行缓冲，保持与真实终端一致的最小实现（SRS FR-6.4/6.5）；窗口 resize 转发留二期 |
+| D-12 | 设置页标签页"每页独立保存"= 以整份配置快照合并提交（单次 upsert_service） | 后端无需按页拆分的保存 API；校验（FR-2.4）天然作用于整份配置，避免半成品配置落盘 |
+| D-14 | 前端 DTO 与 core 序列化形状**逐字段对齐、禁用 flatten**（`list_services` 的 brief.config 为嵌套对象） | serde flatten 对嵌套对象静默降级为默认值（曾导致列表无名、编辑空白且无任何报错），嵌套结构显式可查、编译期字段拼写即校验 |
 
 ---
 
@@ -293,7 +308,8 @@ traysupervisor/
 2. **平台集成测试**：Unix 在 CI（Linux/macOS runner）验证 setsid+killpg 树杀；Windows runner 验证 Job Object 树杀（含孙进程，如 `cmd /c start python ...` 场景反例不出现——我们不提供 shell 包装）。
 3. **日志轮转测试**：灌入超限输出验证分块数、总占用、压缩开关。
 4. **CLI 集成测试**：`traysvctl` 对真实 IPC 的 status/start/stop/restart/退出码矩阵（含"应用未运行"= 3）；`reread`/`update` 差异语义（CONFIG-SPEC §8）。
-5. **手动冒烟矩阵**：Windows 11 / macOS 14 / Ubuntu 24.04（GNOME 含扩展、KDE），覆盖 SRS 全部 P0 验收标准。
+5. **交互终端测试**：PTY 服务跑 `cat`/`python -i`，注入 `write_stdin` 验证回显、Ctrl-C 中断、方向键转义序列（FR-6.4）；`apply_saved_config` 保存后 RUNNING 服务**不重启**、重启后新配置生效（FR-2.10）。
+6. **手动冒烟矩阵**：Windows 11 / macOS 14 / Ubuntu 24.04（GNOME 含扩展、KDE），覆盖 SRS 全部 P0 验收标准。
 
 ---
 

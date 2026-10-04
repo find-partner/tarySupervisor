@@ -73,6 +73,8 @@ pub struct ServiceConfig {
     pub stop_timeout_secs: u64,
     /// 捕获方式（默认 Pipe）
     pub spawn_mode: SpawnMode,
+    /// 终端视图可写（交互，默认 false；仅 Pty 模式有效，SRS FR-6.4）
+    pub term_interactive: bool,
     /// 日志文件策略；None = 仅内存
     pub log: LogPolicy,
     /// Matcher 规则（≤20 条）；空时启用内置 HTTP URL Matcher（FR-5.3）
@@ -95,6 +97,7 @@ impl Default for ServiceConfig {
             startretries: 5,
             stop_timeout_secs: 10,
             spawn_mode: SpawnMode::Pipe,
+            term_interactive: false,
             log: LogPolicy::default(),
             matchers: vec![],
         }

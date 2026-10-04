@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::{sleep_until, Instant as TInstant};
 
 use super::platform::{spawn_service, ExitInfo, RunCtx};
-use super::{HubMsg, SvcCmd};
+use super::{HubMsg, SvcCmd, SvcCtx};
 use crate::config::{Autorestart, ServiceConfig};
 use crate::events::{CoreEvent, EventBus, StateInfo, StopReason, SvcState};
 use crate::matcher::MatcherState;
@@ -33,6 +33,8 @@ pub(super) struct SupervisorDeps {
     pub got_output: Arc<AtomicBool>,
     pub matcher: Arc<Mutex<MatcherState>>,
     pub term: Arc<TermHandle>,
+    /// 运行态上下文（pty_writer 挂靠，供 write_stdin 转发输入，FR-6.4）
+    pub ctx: Arc<SvcCtx>,
 }
 
 fn now_ms() -> u64 {
@@ -151,6 +153,8 @@ pub(super) async fn supervise(d: SupervisorDeps, mut cmd_rx: mpsc::UnboundedRece
             d.matcher.lock().unwrap().clear();
             d.bus.send(CoreEvent::MatcherHit { svc_id: d.id.clone(), items: vec![] });
             d.got_output.store(false, Ordering::Relaxed);
+            // 清空上一轮的 PTY 写端（未运行期间不可写，FR-6.4）
+            *d.ctx.pty_writer.lock().unwrap() = None;
             set_state(&d, &mut info, SvcState::Starting, None, None, None);
 
             match spawn_service(&cfg, &resolve_env(&cfg), Some(&d.term), &d.hub_tx) {
@@ -178,12 +182,16 @@ pub(super) async fn supervise(d: SupervisorDeps, mut cmd_rx: mpsc::UnboundedRece
                     state = SvcState::Backoff;
                     break;
                 }
-                Ok(run) => {
+                Ok(mut run) => {
                     let pid = run.pid;
+                    // PTY 写端挂到 ctx：运行期间 write_stdin 可用（SRS FR-6.4）
+                    *d.ctx.pty_writer.lock().unwrap() = run.pty_writer.take();
                     set_state(&d, &mut info, SvcState::Starting, Some(pid), None, None);
                     sys_line(&d, format!("[traysv] 已启动（PID {pid}）"));
                     let outcome =
                         run_phase(&d, &mut info, &cfg, run, &mut cmd_rx, &mut state, pid).await;
+                    // 退出后写端失效
+                    *d.ctx.pty_writer.lock().unwrap() = None;
                     match outcome {
                         Outcome::Stopped(ecode, reason) => {
                             set_state(&d, &mut info, SvcState::Stopped, None, ecode, Some(reason));

@@ -4,6 +4,7 @@ pub mod platform;
 pub mod supervisor;
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -45,6 +46,9 @@ pub struct SvcCtx {
     pub term: Arc<TermHandle>,
     pub hub_tx: mpsc::UnboundedSender<HubMsg>,
     pub got_output: Arc<AtomicBool>,
+    /// PTY master 写端（SRS FR-6.4）：spawn 成功时置位、进程退出时清空；
+    /// write_stdin 经此转发键盘/粘贴输入。Pipe 模式恒为 None。
+    pub pty_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
 }
 
 #[derive(Clone)]
@@ -173,6 +177,7 @@ impl ServiceManager {
             term: term.clone(),
             hub_tx: hub_tx.clone(),
             got_output: got_output.clone(),
+            pty_writer: Arc::new(Mutex::new(None)),
         });
 
         // 日志 hub：批量广播（≤80ms / 64 行），喂 store + matcher
@@ -222,6 +227,7 @@ impl ServiceManager {
             got_output,
             matcher,
             term,
+            ctx: ctx.clone(),
         };
         handle.spawn(supervisor::supervise(deps, cmd_rx));
 
@@ -329,6 +335,29 @@ impl ServiceManager {
         Some(ctx.term.screen())
     }
 
+    /// 转发输入至服务 PTY master（SRS FR-6.4）。
+    /// 仅 `term_interactive` + Pty 模式且进程运行中可用；Pipe 模式 stdin 已关闭。
+    pub fn write_stdin(&self, id: &str, data: Vec<u8>) -> Result<(), String> {
+        let ctx = self
+            .shared
+            .ctxs
+            .read()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| format!("服务 {id} 不存在或尚未加载"))?;
+        let mut guard = ctx.pty_writer.lock().unwrap();
+        match guard.as_mut() {
+            Some(w) => w
+                .write_all(&data)
+                .and_then(|_| w.flush())
+                .map_err(|e| format!("写入服务 {id} 的 stdin 失败：{e}")),
+            None => Err(format!(
+                "服务 {id} 未运行或非 PTY 模式，无法接收输入"
+            )),
+        }
+    }
+
     /// 当前生效配置
     pub fn current_config(&self) -> AppConfig {
         AppConfig {
@@ -348,6 +377,31 @@ impl ServiceManager {
         if mode == ReloadMode::Reread {
             return Ok(delta);
         }
+        self.apply_loaded(old, new, delta, true)
+    }
+
+    /// GUI 保存路径（SRS FR-2.10 / HLD D-10）：加载并应用新配置——
+    /// added/removed/soft 照常应用，changed 的运行中服务**只换配置、不自动重启**，
+    /// 重启由用户在"需重启生效"提示中显式触发。
+    pub fn apply_saved_config(&self) -> Result<ConfigDelta, Vec<String>> {
+        let new = crate::config::load_app_config(&self.config_path)
+            .map_err(|e| e.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect::<Vec<_>>())?;
+        let errors = validate_app(&new);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        let old = self.current_config();
+        let delta = diff_configs(&old.services, &new.services);
+        self.apply_loaded(old, new, delta, false)
+    }
+
+    fn apply_loaded(
+        &self,
+        old: AppConfig,
+        new: AppConfig,
+        delta: ConfigDelta,
+        restart_changed: bool,
+    ) -> Result<ConfigDelta, Vec<String>> {
         if delta.is_empty() {
             return Ok(delta);
         }
@@ -382,7 +436,8 @@ impl ServiceManager {
                 Self::create_service(&self.shared, handle, cfg);
             }
         }
-        // changed：重启使配置生效；仅 name/autostart 变更即时生效不重启（soft）
+        // changed：仅 name/autostart 变更即时生效不重启（soft）；
+        // restart_changed=false（GUI 保存）时只换配置不重启（SRS FR-2.10）
         for id in &delta.changed {
             let Some(cfg) = new_map.get(id) else { continue };
             let sups = self.shared.sups.read().unwrap();
@@ -395,7 +450,9 @@ impl ServiceManager {
                         ctx.matcher.lock().unwrap().replace(&effective_matchers(cfg));
                     }
                 }
-                let _ = sup.cmd_tx.send(SvcCmd::Restart);
+                if restart_changed {
+                    let _ = sup.cmd_tx.send(SvcCmd::Restart);
+                }
             }
         }
         for id in &delta.soft_changed {

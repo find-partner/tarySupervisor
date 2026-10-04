@@ -115,3 +115,15 @@ pub fn invoke_args_log(id: &str, since: u64, limit: usize) -> JsValue {
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("limit"), &JsValue::from_f64(limit as f64));
     obj.into()
 }
+
+/// write_stdin 入参：id + 字节数组（SRS FR-6.4）；普通 Array 经 serde_json → Vec<u8>
+pub fn invoke_args_stdin(id: &str, data: &[u8]) -> JsValue {
+    let obj = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("id"), &JsValue::from_str(id));
+    let arr = js_sys::Array::new();
+    for b in data {
+        arr.push(&JsValue::from_f64(*b as f64));
+    }
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("data"), &arr.into());
+    obj.into()
+}

@@ -33,4 +33,6 @@ web-sys = { version = "0.3", features = [
     "HtmlInputElement",
     "Location",
     "Navigator",
+    "ClipboardEvent",
+    "DataTransfer",
 ] }

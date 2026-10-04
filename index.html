@@ -87,6 +87,12 @@
       }
       .row-btns { display: flex; gap: 8px; margin-top: 16px; max-width: 760px; }
 
+      /* ---------- 标签页（FR-2.8/2.9） ---------- */
+      .tabbar { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; max-width: 760px; flex-wrap: wrap; }
+      .tabbar .tab { border: 1px solid transparent; border-bottom: none; background: transparent; padding: 6px 14px; border-radius: 6px 6px 0 0; color: var(--muted); }
+      .tabbar .tab:hover { background: #eef1f4; color: var(--fg); }
+      .tabbar .tab.active { background: #fff; border-color: var(--line); color: var(--fg); font-weight: 600; }
+
       /* ---------- 日志窗口 ---------- */
       .logwin { display: flex; flex-direction: column; height: 100%; }
       .logview {

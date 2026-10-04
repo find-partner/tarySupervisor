@@ -90,6 +90,7 @@ pub fn run() {
             commands::get_env_resolved_preview,
             commands::reload_config,
             commands::term_snapshot,
+            commands::write_stdin,
             commands::open_log_dir,
         ])
         .build(tauri::generate_context!())
