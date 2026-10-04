@@ -26,6 +26,10 @@ pub fn run() {
             wins::open_settings(app);
         }))
         .setup(|app| {
+            // macOS 托盘应用：不显示 Dock 图标（等效 Info.plist 的 LSUIElement，开发与打包态一致）
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             let handle = app.handle().clone();
 
             // 配置目录与文件（FR-2.6 路径：~/.traysupervisor/config.ini）
