@@ -68,7 +68,8 @@ try {
     Start-Sleep -Seconds 3
     Add-Content -Path $cfg -Value "`n[program:smoke-hr]`ncommand=cmd /c echo hi`n"
     Start-Sleep -Seconds 3
-    $applied = Select-String -Path $appLog -Pattern "配置热加载已应用" -Quiet -ErrorAction SilentlyContinue
+    # env_logger 输出到 stderr（应用默认 info 级），断言需同时查 stdout 与 stderr 重定向文件
+    $applied = Select-String -Path $appLog, "$appLog.err" -Pattern "配置热加载已应用" -Quiet -ErrorAction SilentlyContinue
     if ($applied) {
         Pass "有效变更被热加载应用"
     } else {
@@ -76,7 +77,7 @@ try {
     }
     Write-Config "[program:broken]`ncommand=cmd /c echo x`nbogus_key=1`n"
     Start-Sleep -Seconds 3
-    $rejected = Select-String -Path $appLog -Pattern "配置热加载校验失败" -Quiet -ErrorAction SilentlyContinue
+    $rejected = Select-String -Path $appLog, "$appLog.err" -Pattern "配置热加载校验失败" -Quiet -ErrorAction SilentlyContinue
     if ($rejected) {
         Pass "非法配置被拒绝并沿用上一次有效配置"
     } else {

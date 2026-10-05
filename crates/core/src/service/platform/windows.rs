@@ -75,7 +75,14 @@ pub(super) fn spawn_pipe(
             winapi::quote_arg(&prog),
             args.iter().map(|a| winapi::quote_arg(a)).collect::<Vec<_>>().join(" ")
         ));
-        let env_block = winapi::build_env_block(env);
+        // CREATE_UNICODE_ENVIRONMENT 是整体替换：环境块 = 继承本进程环境 + 服务条目覆盖，
+        // 与 Unix Command::env 的「继承+覆盖」语义一致。仅传服务条目会得到空环境，
+        // 子进程缺 SystemRoot/PATH 秒退（PATH 兜底注入在 Windows 明确不做，见 shellenv）。
+        let mut full_env: std::collections::BTreeMap<String, String> = std::env::vars_os()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned()))
+            .collect();
+        full_env.extend(env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        let env_block = winapi::build_env_block(&full_env);
         let cwd_w = winapi::to_wide(&cwd.to_string_lossy());
 
         let mut si: STARTUPINFOW = std::mem::zeroed();

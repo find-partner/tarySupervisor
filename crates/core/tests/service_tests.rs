@@ -74,6 +74,33 @@ fn pipe_lifecycle_start_stop() {
 }
 
 #[test]
+#[cfg(windows)]
+fn pipe_spawn_inherits_parent_env_on_windows() {
+    // Windows pipe 走 CREATE_UNICODE_ENVIRONMENT 整体替换环境块：若只传服务自身
+    // 条目，子进程将没有 SystemRoot/PATH，`cmd /c ping` 找不到 ping 秒退
+    // （曾因此 STARTING→EXITED）。回归锁定：不配置任何 env 也必须继承父环境存活。
+    // Windows 集成用例不在 CI 运行（CI 只跑 --lib），由本机 cargo test 覆盖。
+    let cfg = traysupervisor_core::config::AppConfig {
+        services: vec![ServiceConfig {
+            stop_timeout_secs: 5,
+            ..svc("t-win-env", "cmd", &["/c", "ping", "-t", "127.0.0.1"])
+        }],
+        ..Default::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = ServiceManager::new(cfg, dir.path().join("config.ini")).unwrap();
+    mgr.start("t-win-env").unwrap();
+    assert!(
+        wait_state(&mgr, "t-win-env", SvcState::Running, Duration::from_secs(10)),
+        "pipe 子进程应继承父环境存活：{:?}",
+        mgr.get_log("t-win-env", 0, 200)
+    );
+    mgr.stop("t-win-env").unwrap();
+    assert!(wait_state(&mgr, "t-win-env", SvcState::Stopped, Duration::from_secs(15)));
+    mgr.shutdown_all();
+}
+
+#[test]
 fn unexpected_exit_goes_exited() {
     let cfg = traysupervisor_core::config::AppConfig {
         services: vec![ServiceConfig {
