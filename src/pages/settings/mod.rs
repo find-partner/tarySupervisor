@@ -1,7 +1,7 @@
 //! 设置窗口（FR-2 / SRS FR-2A）主组件：左侧服务列表 + 右侧三态编辑区——
 //! 空态引导（FR-2.7，empty.rs）/ 编辑模式（FR-2.8，edit.rs）/
 //! 新建向导（FR-2.9，wizard.rs）；表单模型见 form.rs，四个标签页面板见
-//! basic.rs 与 panels.rs。
+//! basic.rs（基础配置：命令行/平台变体/环境变量）与 panels.rs（启动策略/日志/快捷项）。
 
 mod basic;
 mod confirm;
@@ -15,10 +15,10 @@ mod wizard;
 use leptos::*;
 
 use crate::bridge;
-use crate::dto::{ConfigInvalidEv, ServiceBriefOut};
+use crate::dto::{ConfigInvalidEv, PlatformInfoDto, ServiceBriefOut};
 use crate::store;
 
-use confirm::{ConfirmRequest, confirm_dialog};
+use confirm::{confirm_dialog, ConfirmRequest};
 use form::{blank_form, form_from_brief, input_from_form, merged_for_save};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -29,6 +29,14 @@ enum Mode {
     Edit,
     /// 新建向导（FR-2.9），payload = 当前步 0..4
     Wizard(usize),
+}
+
+/// 平台注册表刷新（get_platform_info，DESIGN §4.7）：下拉选项 / 本机角标 / 解析链提示
+fn refresh_platform_info(info: RwSignal<PlatformInfoDto>) {
+    spawn_local(async move {
+        let v = bridge::invoke_t::<PlatformInfoDto>("get_platform_info", None).await;
+        info.set(v);
+    });
 }
 
 #[component]
@@ -55,21 +63,22 @@ pub fn SettingsPage() -> impl IntoView {
     // 操作栏启停命令的运行时错误（如「当前为 RUNNING，无需启动」，FR-2.11）
     let ctrl_err = create_rw_signal(String::new());
 
-    // 配置热更/校验失败横幅（FR-2.6；数据刷新由 store 负责）
+    // 配置热更/校验失败横幅（FR-2.6；数据刷新由 store 负责）+ 平台注册表（FR-2.13）
+    let platform_info = create_rw_signal(PlatformInfoDto::default());
     spawn_local(async move {
-        let _ = bridge
-            ::listen("config-changed", move |_| {
-                banner.set(Vec::new());
-            })
-            .await;
-        let _ = bridge
-            ::listen("config-invalid", move |payload| {
-                if let Ok(ev) = serde_wasm_bindgen::from_value::<ConfigInvalidEv>(payload) {
-                    banner.set(ev.errors);
-                }
-            })
-            .await;
+        let _ = bridge::listen("config-changed", move |_| {
+            banner.set(Vec::new());
+            refresh_platform_info(platform_info);
+        })
+        .await;
+        let _ = bridge::listen("config-invalid", move |payload| {
+            if let Ok(ev) = serde_wasm_bindgen::from_value::<ConfigInvalidEv>(payload) {
+                banner.set(ev.errors);
+            }
+        })
+        .await;
     });
+    refresh_platform_info(platform_info);
 
     let start_edit = move |b: &ServiceBriefOut| {
         selected_id.set(Some(b.config.id.clone()));
@@ -120,8 +129,7 @@ pub fn SettingsPage() -> impl IntoView {
                     }
                     // 保存后以服务端规范化结果同步快照（name 默认、~ 展开等）
                     let saved_id = input.id.clone();
-                    let fresh: Vec<ServiceBriefOut> =
-                        bridge::invoke_t("list_services", None).await;
+                    let fresh: Vec<ServiceBriefOut> = bridge::invoke_t("list_services", None).await;
                     if let Some(b) = fresh.iter().find(|b| b.config.id == saved_id) {
                         loaded.set(form_from_brief(b));
                     }
@@ -176,7 +184,9 @@ pub fn SettingsPage() -> impl IntoView {
         }));
     };
     let do_delete = move || {
-        let Some(id) = selected_id.get_untracked() else { return };
+        let Some(id) = selected_id.get_untracked() else {
+            return;
+        };
         pending_del.set(None);
         spawn_local(async move {
             match bridge::invoke_errors("delete_service", Some(bridge::invoke_args_id(&id))).await {
@@ -203,14 +213,14 @@ pub fn SettingsPage() -> impl IntoView {
                 Ok(v) => {
                     let pairs: Vec<(String, String)> =
                         serde_wasm_bindgen::from_value(v).unwrap_or_default();
-                    preview.set(Some(Ok(
-                        pairs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("\n")
-                    )));
+                    preview.set(Some(Ok(pairs
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"))));
                 }
                 Err(e) => {
-                    let msg = e
-                        .as_string()
-                        .unwrap_or_else(|| format!("{e:?}"));
+                    let msg = e.as_string().unwrap_or_else(|| format!("{e:?}"));
                     preview.set(Some(Err(msg)));
                 }
             }
@@ -239,7 +249,9 @@ pub fn SettingsPage() -> impl IntoView {
         mode.set(Mode::Wizard((step + 1).min(3)));
     };
     let wizard_prev = move |_| {
-        let Mode::Wizard(step) = mode.get() else { return };
+        let Mode::Wizard(step) = mode.get() else {
+            return;
+        };
         step_err.set(String::new());
         mode.set(Mode::Wizard(step.saturating_sub(1)));
     };
@@ -248,13 +260,35 @@ pub fn SettingsPage() -> impl IntoView {
     let editor_node = move || match mode.get() {
         Mode::Empty => empty::empty_state().into_view(),
         Mode::Edit => edit::edit_mode(
-            form, tab, dirty, errors, banner, preview, restart_hint,
-            selected_id, ctrl_err, save_tab, restart_now, del, do_preview,
-        ).into_view(),
+            form,
+            tab,
+            dirty,
+            errors,
+            banner,
+            preview,
+            restart_hint,
+            selected_id,
+            ctrl_err,
+            platform_info,
+            save_tab,
+            restart_now,
+            del,
+            do_preview,
+        )
+        .into_view(),
         Mode::Wizard(step) => wizard::wizard_mode(
-            step, form, dirty, errors, step_err,
-            wizard_next, wizard_prev, save_wizard, do_preview,
-        ).into_view(),
+            step,
+            form,
+            dirty,
+            errors,
+            step_err,
+            platform_info,
+            wizard_next,
+            wizard_prev,
+            save_wizard,
+            do_preview,
+        )
+        .into_view(),
     };
 
     view! {

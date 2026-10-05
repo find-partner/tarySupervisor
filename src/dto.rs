@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct EnvEntry {
@@ -12,6 +13,54 @@ pub struct EnvEntry {
     pub value: String,
     #[serde(default)]
     pub expand: bool,
+    /// 行级平台标签（FR-2.13）：None = 全部平台
+    #[serde(default)]
+    pub platform: Option<String>,
+}
+
+/// 平台变体（FR-2.13 / DESIGN §4.2）：命令行/工作目录/捕获模式/交互终端的
+/// 平台覆盖；None / 空串 = 跟随默认值
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct PlatformVariantDto {
+    #[serde(default)]
+    pub command_line: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub spawn_mode: Option<String>,
+    #[serde(default)]
+    pub term_interactive: Option<bool>,
+}
+
+/// 平台注册表项（get_platform_info）
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct PlatformDefDto {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub family: Option<String>,
+}
+
+/// get_platform_info 返回：平台下拉选项、本机角标与解析链提示（DESIGN §4.7）
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct PlatformInfoDto {
+    #[serde(default)]
+    pub native_os: String,
+    #[serde(default)]
+    pub platforms: Vec<PlatformDefDto>,
+    #[serde(default)]
+    pub current: Option<String>,
+    #[serde(default)]
+    pub chain: Vec<String>,
+}
+
+/// parse_pasted_line 返回（FR-2.12）：前缀环境变量 + 剩余命令行
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct PastedLineDto {
+    #[serde(default)]
+    pub env: Vec<EnvEntry>,
+    #[serde(default)]
+    pub command_line: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -90,6 +139,9 @@ pub struct ServiceConfigDto {
     pub log: LogPolicyDto,
     #[serde(default)]
     pub matchers: Vec<MatcherConfig>,
+    /// 基础配置字段的平台变体（键 ∈ 平台注册表，FR-2.13）
+    #[serde(default)]
+    pub platform: BTreeMap<String, PlatformVariantDto>,
 }
 
 fn d3() -> u64 {
@@ -127,6 +179,12 @@ pub struct ServiceBriefOut {
     #[serde(default)]
     pub match_items: Vec<MatchItem>,
     pub command_line: String,
+    /// 当前平台生效命令行（DESIGN §4.2）：编辑页「本机实际执行」提示用
+    #[serde(default)]
+    pub effective_command_line: String,
+    /// 平台变体回显（含非本机平台，存盘无损）
+    #[serde(default)]
+    pub platform: BTreeMap<String, PlatformVariantDto>,
     /// 日志单文件上限的带单位展示值（如 `10MB`；未启用文件日志为空，FR-2.2 / D-16）
     #[serde(default)]
     pub log_max_bytes_text: String,
@@ -184,6 +242,9 @@ pub struct ServiceInput {
     pub log_max_files: u32,
     pub log_compress: bool,
     pub matchers: Vec<MatcherConfig>,
+    /// 基础配置字段的平台变体（FR-2.13）
+    #[serde(default)]
+    pub platform: BTreeMap<String, PlatformVariantDto>,
 }
 
 // ---------- 终端屏幕（core::term 序列化镜像） ----------

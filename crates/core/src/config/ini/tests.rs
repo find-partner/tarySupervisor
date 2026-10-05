@@ -1,11 +1,12 @@
 //! ini 编解码测试：样例解析、未知键/节拒绝、roundtrip、原子保存权限。
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::{load_app_config, parse_ini_str, save_app_config, to_ini_string};
 use crate::config::{
-    diff_configs, Autorestart, AppConfig, EnvEntry, GlobalSettings, LogFilePolicy, LogPolicy,
-    MatcherConfig, ServiceConfig, SpawnMode,
+    diff_configs, AppConfig, Autorestart, EnvEntry, GlobalSettings, LogFilePolicy, LogPolicy,
+    MatcherConfig, PlatformDef, PlatformRegistry, PlatformVariant, ServiceConfig, SpawnMode,
 };
 
 const SAMPLE: &str = r#"
@@ -49,7 +50,10 @@ fn parses_spec_sample() {
     assert_eq!(d.id, "dev-docs");
     assert_eq!(d.name, "文档站");
     assert_eq!(d.command, "python");
-    assert_eq!(d.args, vec!["-m", "http.server", "8000", "--directory", r"C:\work\docs"]);
+    assert_eq!(
+        d.args,
+        vec!["-m", "http.server", "8000", "--directory", r"C:\work\docs"]
+    );
     assert_eq!(d.autorestart, Autorestart::OnFailure);
     assert_eq!(d.matchers.len(), 1);
     assert_eq!(d.matchers[0].pattern, r"https?://\S+");
@@ -123,17 +127,52 @@ fn save_load_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.ini");
     let cfg = AppConfig {
-        settings: GlobalSettings { log_lines: 500, notify_on_failure: false },
+        settings: GlobalSettings {
+            log_lines: 500,
+            notify_on_failure: false,
+            platforms: vec![
+                PlatformDef {
+                    name: "home-mac".into(),
+                    family: Some("macos".into()),
+                },
+                PlatformDef {
+                    name: "build-box".into(),
+                    family: None,
+                },
+            ],
+            current_platform: Some("home-mac".into()),
+        },
         services: vec![
             ServiceConfig {
                 id: "web".into(),
                 name: "网页服务".into(),
                 command: r"C:\Program Files\python.exe".into(),
-                args: vec!["-m".into(), "http.server".into(), "--bind".into(), "127.0.0.1".into()],
+                args: vec![
+                    "-m".into(),
+                    "http.server".into(),
+                    "--bind".into(),
+                    "127.0.0.1".into(),
+                ],
                 cwd: None,
                 env: vec![
-                    EnvEntry { key: "A".into(), value: "x y".into(), expand: false },
-                    EnvEntry { key: "B".into(), value: "${A}/z".into(), expand: true },
+                    EnvEntry {
+                        key: "A".into(),
+                        value: "x y".into(),
+                        expand: false,
+                        platform: None,
+                    },
+                    EnvEntry {
+                        key: "B".into(),
+                        value: "${A}/z".into(),
+                        expand: true,
+                        platform: None,
+                    },
+                    EnvEntry {
+                        key: "C".into(),
+                        value: "win".into(),
+                        expand: false,
+                        platform: Some("windows".into()),
+                    },
                 ],
                 autostart: true,
                 autorestart: Autorestart::Always,
@@ -154,9 +193,32 @@ fn save_load_roundtrip() {
                     template: "端口 {0}".into(),
                     max_items: 3,
                 }],
+                platform: BTreeMap::from([
+                    (
+                        "macos".to_string(),
+                        PlatformVariant {
+                            command: "/opt/homebrew/bin/python3".into(),
+                            args: vec!["-m".into(), "http.server".into()],
+                            directory: Some(PathBuf::from("/opt/dir")),
+                            spawn_mode: Some(SpawnMode::Pipe),
+                            term_interactive: Some(false),
+                        },
+                    ),
+                    (
+                        "windows".to_string(),
+                        PlatformVariant {
+                            command: r"C:\tools\web.exe".into(),
+                            ..Default::default()
+                        },
+                    ),
+                ]),
                 ..Default::default()
             },
-            ServiceConfig { id: "b".into(), command: "echo".into(), ..Default::default() },
+            ServiceConfig {
+                id: "b".into(),
+                command: "echo".into(),
+                ..Default::default()
+            },
         ],
     };
     save_app_config(&cfg, &path).unwrap();
@@ -188,7 +250,9 @@ fn log_maxbytes_accepts_units_and_writes_readable() {
         ("1G", 1024 * 1024 * 1024),
         ("10485760", 10_485_760),
     ] {
-        let s = format!("[program:a]\ncommand=x\nstdout_logfile=/tmp/a.log\nstdout_logfile_maxbytes={text}\n");
+        let s = format!(
+            "[program:a]\ncommand=x\nstdout_logfile=/tmp/a.log\nstdout_logfile_maxbytes={text}\n"
+        );
         let cfg = parse_ini_str(&s, None).unwrap();
         assert_eq!(
             cfg.services[0].log.file.as_ref().unwrap().max_bytes,
@@ -198,7 +262,9 @@ fn log_maxbytes_accepts_units_and_writes_readable() {
     }
     // 非法单位拒绝
     let bad = "[program:a]\ncommand=x\nstdout_logfile=/tmp/a.log\nstdout_logfile_maxbytes=10TB\n";
-    assert!(parse_ini_str(bad, None).unwrap_err().contains("stdout_logfile_maxbytes"));
+    assert!(parse_ini_str(bad, None)
+        .unwrap_err()
+        .contains("stdout_logfile_maxbytes"));
 
     // 回写为可读单位且可再解析（roundtrip）
     let cfg = AppConfig {
@@ -224,12 +290,150 @@ fn log_maxbytes_accepts_units_and_writes_readable() {
 
 #[test]
 fn diff_detects_hard_and_soft_changes() {
-    let old = vec![ServiceConfig { id: "a".into(), command: "x".into(), ..Default::default() }];
+    let old = vec![ServiceConfig {
+        id: "a".into(),
+        command: "x".into(),
+        ..Default::default()
+    }];
     let mut new = old.clone();
     new[0].name = "改名".into();
-    let d = diff_configs(&old, &new);
+    let reg = PlatformRegistry::default();
+    let d = diff_configs(&old, &new, &reg, &reg);
     assert!(d.changed.is_empty() && d.soft_changed == vec!["a".to_string()]);
     new[0].command = "y".into();
-    let d = diff_configs(&old, &new);
+    let d = diff_configs(&old, &new, &reg, &reg);
     assert_eq!(d.changed, vec!["a".to_string()]);
+}
+
+// ---------- 平台体系（FR-2.13 / DESIGN §4）----------
+
+const PLATFORM_SAMPLE: &str = r#"
+[traysupervisor]
+platforms=home-mac:macos, build-box
+current_platform=home-mac
+
+[program:web]
+command=npx -y open-websearch --port=1123
+directory=~/work
+environment=PORT="3000", LOG_DIR="~/logs", LOG_DIR="!${LOCALAPPDATA}\logs"@windows
+command.macos=/opt/homebrew/bin/open-websearch --port=1123
+command.windows=C:\tools\open-websearch.exe --port 1123
+directory.windows=C:\work
+spawn_mode.windows=pipe
+term_interactive.windows=false
+"#;
+
+#[test]
+fn parses_platform_sample() {
+    let cfg = parse_ini_str(PLATFORM_SAMPLE, None).unwrap();
+    assert_eq!(
+        cfg.settings.platforms,
+        vec![
+            PlatformDef {
+                name: "home-mac".into(),
+                family: Some("macos".into())
+            },
+            PlatformDef {
+                name: "build-box".into(),
+                family: None
+            },
+        ]
+    );
+    assert_eq!(cfg.settings.current_platform.as_deref(), Some("home-mac"));
+    let s = &cfg.services[0];
+    assert_eq!(s.platform.len(), 2);
+    let win = &s.platform["windows"];
+    assert_eq!(win.command, r"C:\tools\open-websearch.exe");
+    assert_eq!(win.args, vec!["--port", "1123"]);
+    assert_eq!(
+        win.directory.as_deref(),
+        Some(std::path::Path::new("C:\\work"))
+    );
+    assert_eq!(win.spawn_mode, Some(SpawnMode::Pipe));
+    assert_eq!(win.term_interactive, Some(false));
+    // 环境变量行级标签
+    assert_eq!(s.env.len(), 3);
+    assert_eq!(s.env[1].platform, None);
+    assert_eq!(s.env[2].platform.as_deref(), Some("windows"));
+    assert!(s.env[2].expand);
+}
+
+#[test]
+fn platform_sample_roundtrip() {
+    let cfg = parse_ini_str(PLATFORM_SAMPLE, None).unwrap();
+    let text = to_ini_string(&cfg);
+    assert_eq!(parse_ini_str(&text, None).unwrap(), cfg);
+    assert!(
+        text.contains("platforms=home-mac:macos, build-box"),
+        "{text}"
+    );
+    assert!(text.contains("current_platform=home-mac"), "{text}");
+    assert!(
+        text.contains(r"command.windows=C:\tools\open-websearch.exe --port 1123"),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#"LOG_DIR="!${LOCALAPPDATA}\logs"@windows"#),
+        "{text}"
+    );
+}
+
+#[test]
+fn resolve_uses_chain_current_platform() {
+    let cfg = parse_ini_str(PLATFORM_SAMPLE, None).unwrap();
+    let reg = PlatformRegistry::new(&cfg.settings);
+    // current_platform=home-mac（家族 macos）：命令行走 macos 变体
+    let eff = cfg.services[0].resolve_for(&reg);
+    assert_eq!(eff.command, "/opt/homebrew/bin/open-websearch");
+    // 环境变量：windows 标签未命中（链 = [home-mac, macos]），LOG_DIR 为默认值
+    let log = eff.env.iter().find(|e| e.key == "LOG_DIR").unwrap();
+    assert_eq!(log.value, "~/logs");
+
+    // current_platform 未声明：链 = [本机 OS]
+    let mut plain = cfg.settings.clone();
+    plain.current_platform = None;
+    let reg2 = PlatformRegistry::new(&plain);
+    let eff2 = cfg.services[0].resolve_for(&reg2);
+    if crate::config::native_os() == "windows" {
+        assert_eq!(eff2.command, r"C:\tools\open-websearch.exe");
+        let log = eff2.env.iter().find(|e| e.key == "LOG_DIR").unwrap();
+        assert_eq!(log.value, r"${LOCALAPPDATA}\logs");
+    } else if crate::config::native_os() == "macos" {
+        assert_eq!(eff2.command, "/opt/homebrew/bin/open-websearch");
+    } else {
+        assert_eq!(eff2.command, "npx");
+    }
+}
+
+#[test]
+fn unknown_platform_suffix_rejected_at_validate() {
+    let s = "[program:a]\ncommand=x\ncommand.nope=y\n";
+    let err = parse_ini_str(s, None).unwrap_err();
+    assert!(err.contains("未注册"), "{err}");
+}
+
+#[test]
+fn bad_family_rejected() {
+    let s = "[traysupervisor]\nplatforms=x:solaris\n\n[program:a]\ncommand=x\n";
+    let err = parse_ini_str(s, None).unwrap_err();
+    assert!(err.contains("家族"), "{err}");
+}
+
+#[test]
+fn unregistered_current_platform_rejected() {
+    let s = "[traysupervisor]\ncurrent_platform=ghost\n\n[program:a]\ncommand=x\n";
+    let err = parse_ini_str(s, None).unwrap_err();
+    assert!(err.contains("current_platform"), "{err}");
+}
+
+#[test]
+fn combo_cross_platform_rejected() {
+    // term_interactive=true（默认）+ spawn_mode.windows=pipe → windows 组合非法
+    let s =
+        "[program:a]\ncommand=x\nspawn_mode=pty\nterm_interactive=true\nspawn_mode.windows=pipe\n";
+    let err = parse_ini_str(s, None).unwrap_err();
+    assert!(err.contains("平台 windows"), "{err}");
+    // 成对覆盖则合法
+    let s2 = "[program:a]\ncommand=x\nspawn_mode=pty\nterm_interactive=true\nspawn_mode.windows=pipe\nterm_interactive.windows=false\n";
+    assert!(parse_ini_str(s2, None).is_ok());
 }

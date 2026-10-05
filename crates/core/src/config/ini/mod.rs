@@ -15,7 +15,10 @@ mod tests;
 
 use std::path::Path;
 
-use super::{format_byte_size, join_command_line, serialize_environment, AppConfig, SpawnMode};
+use super::{
+    format_byte_size, join_command_line, serialize_environment, AppConfig, GlobalSettings,
+    SpawnMode,
+};
 
 pub use parse::parse_ini_str;
 
@@ -30,13 +33,20 @@ pub fn to_ini_string(cfg: &AppConfig) -> String {
     out.push_str("# TraySupervisor 配置（supervisord 风格）；完整规范见 docs/CONFIG-SPEC.md\n");
     out.push_str("\n[traysupervisor]\n");
     out.push_str(&format!("log_lines={}\n", cfg.settings.log_lines));
-    out.push_str(&format!("notify_on_failure={}\n", cfg.settings.notify_on_failure));
+    out.push_str(&format!(
+        "notify_on_failure={}\n",
+        cfg.settings.notify_on_failure
+    ));
+    write_platform_settings(&mut out, &cfg.settings);
     for svc in &cfg.services {
         out.push_str(&format!("\n[program:{}]\n", svc.id));
         if !svc.name.is_empty() && svc.name != svc.id {
             out.push_str(&format!("name={}\n", svc.name));
         }
-        out.push_str(&format!("command={}\n", join_command_line(&svc.command, &svc.args)));
+        out.push_str(&format!(
+            "command={}\n",
+            join_command_line(&svc.command, &svc.args)
+        ));
         if let Some(dir) = &svc.cwd {
             out.push_str(&format!("directory={}\n", dir.display()));
         }
@@ -58,11 +68,17 @@ pub fn to_ini_string(cfg: &AppConfig) -> String {
             out.push_str("term_interactive=true\n");
         }
         if !svc.env.is_empty() {
-            out.push_str(&format!("environment={}\n", serialize_environment(&svc.env)));
+            out.push_str(&format!(
+                "environment={}\n",
+                serialize_environment(&svc.env)
+            ));
         }
         if let Some(f) = &svc.log.file {
             out.push_str(&format!("stdout_logfile={}\n", f.path.display()));
-            out.push_str(&format!("stdout_logfile_maxbytes={}\n", format_byte_size(f.max_bytes)));
+            out.push_str(&format!(
+                "stdout_logfile_maxbytes={}\n",
+                format_byte_size(f.max_bytes)
+            ));
             out.push_str(&format!("stdout_logfile_backups={}\n", f.max_files));
             if f.compress {
                 out.push_str("logfile_compress=true\n");
@@ -73,8 +89,48 @@ pub fn to_ini_string(cfg: &AppConfig) -> String {
             out.push_str(&format!("matcher.{}.template={}\n", i + 1, m.template));
             out.push_str(&format!("matcher.{}.max_items={}\n", i + 1, m.max_items));
         }
+        // 平台变体（FR-2.13 / DESIGN §4.2）：原样写出全部平台（含非本机平台，存盘无损）
+        for (platform, v) in &svc.platform {
+            if v.command.is_empty() && v.args.is_empty() {
+                // 无命令覆盖：仅当存在其他覆盖字段时仍需落节，但 command 不写
+            } else {
+                out.push_str(&format!(
+                    "command.{}={}\n",
+                    platform,
+                    join_command_line(&v.command, &v.args)
+                ));
+            }
+            if let Some(dir) = &v.directory {
+                out.push_str(&format!("directory.{}={}\n", platform, dir.display()));
+            }
+            if let Some(sm) = v.spawn_mode {
+                out.push_str(&format!("spawn_mode.{}={}\n", platform, sm.as_str()));
+            }
+            if let Some(ti) = v.term_interactive {
+                out.push_str(&format!("term_interactive.{}={}\n", platform, ti));
+            }
+        }
     }
     out
+}
+
+/// 全局节平台键回写（CONFIG-SPEC §2）：platforms / current_platform 仅在有值时写出
+fn write_platform_settings(out: &mut String, settings: &GlobalSettings) {
+    if !settings.platforms.is_empty() {
+        let list = settings
+            .platforms
+            .iter()
+            .map(|d| match &d.family {
+                Some(f) => format!("{}:{}", d.name, f),
+                None => d.name.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("platforms={list}\n"));
+    }
+    if let Some(cur) = &settings.current_platform {
+        out.push_str(&format!("current_platform={cur}\n"));
+    }
 }
 
 /// 原子保存：临时文件 + 改名；Unix 权限 0600（NFR-5）。

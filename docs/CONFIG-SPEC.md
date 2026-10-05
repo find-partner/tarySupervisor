@@ -2,8 +2,8 @@
 
 | 项目 | 内容 |
 |------|------|
-| 版本 | v0.3（草案，与 SRS/HLD 同步） |
-| 日期 | 2026-10-05 |
+| 版本 | v0.5（与 SRS/HLD v0.5 同步） |
+| 日期 | 2026-10-06 |
 | 依据 | [SRS](./SRS.md) FR-2 / FR-3 / FR-4 / FR-5，[HLD](./HLD.md) §3.1 |
 | 状态 | 概要设计定稿前配套规范 |
 
@@ -24,6 +24,11 @@
 |----|------|------|------|---------|
 | log_lines | int | 2000 | 每服务内存环形缓冲行数（100–100000） | FR-4.2 |
 | notify_on_failure | bool | true | 服务异常退出（EXITED/FATAL）时系统通知（P1） | FR-7.1 |
+| platforms | 逗号列表 | 空 | **自定义平台注册表**（FR-2.13）：每项 `名字[:家族]`，名字为 slug（`[a-z0-9-_]`，不得与内置平台同名），家族须为内置平台名（`windows` / `macos` / `linux`），如 `platforms=home-mac:macos, office-win:windows`；内置三平台恒可用、无需声明 | FR-2.13 |
+| current_platform | string | 空 | **当前所在平台**（FR-2.13）：取值须为内置或已声明平台；空 = 按内置自动检测（`std::env::consts::OS`）。自定义平台无法自动检测，必须声明。注意：该键属机器本地状态，随配置文件同步到新机器后需改一次 | FR-2.13 |
+
+**平台解析链**（服务级变体取用规则，按序取第一个命中、均未命中回退默认值）：
+`current_platform` → 其 OS 家族（自定义平台且声明了家族时）→ 自动检测的内置 OS（链中尚未含家族时附加）。
 
 ## 3. 服务节 `[program:<id>]`
 
@@ -60,6 +65,11 @@
 | matcher.N.pattern | regex | — | 第 N 条 Matcher 正则（Rust regex 语法），N 从 1 连续递增，顺序即匹配顺序 | FR-5.1 |
 | matcher.N.template | string | `🌐 打开 {0}` | 快捷项文案，`{0} {1}` 引用捕获组 | FR-5.1 |
 | matcher.N.max_items | int | 5 | 该条快捷项上限（≤ 10，LRU 淘汰） | FR-5.4 |
+| command.&lt;平台&gt; | string | 空 | **平台命令行变体**（FR-2.13）：完整命令行单行，切分规则同 §3.4；`<平台>` ∈ 平台注册表（§2）；未命中的平台用默认 `command` | FR-2.13 |
+| directory.&lt;平台&gt; | 路径 | 空 | 平台工作目录变体，支持 `~` 展开 | FR-2.13 |
+| spawn_mode.&lt;平台&gt; | enum | 空 | 平台捕获模式变体（`pipe` / `pty`） | FR-2.13 |
+| term_interactive.&lt;平台&gt; | bool | 空 | 平台交互终端变体；须与该平台 `spawn_mode` 组合合法（§7） | FR-2.13 |
+| environment 行级标签 | `@平台` | 无 | 环境变量条目引号后可写 `@平台`（或 `@all`）：该行仅在该平台生效；无标签 = 全部平台；同名键平台条目**就地覆盖**全部平台条目（值与 expand 均以平台条目为准、位置不变），见 §4 | FR-2.13 |
 
 ### 3.3 暂不支持 / 二期（有意省略的 supervisord 字段）
 
@@ -89,10 +99,15 @@ GUI 应用从 Finder/启动台（launchd）拉起时只继承精简 PATH（`/usr
 
 **兼容性声明（DEV-CONVENTIONS §1）**：`shell` 为可选键、缺省 false——旧配置文件（无 `shell` 键）在当前版本解析不受影响；含 `shell=true` 的配置文件在旧版本应用上会因「未知键」被拒绝，不做兼容。
 
+### 3.6 命令行粘贴解析（FR-2.12，仅 GUI 交互层）
+
+设置页命令行输入框支持粘贴 Unix 惯例的整行命令：按 §3.4 切分 token 后，从头扫描形如 `KEY=VALUE`（`KEY` 为 `[A-Za-z_][A-Za-z0-9_]*`）的前缀 token 记为环境变量候选，第一个不符合该形态的 token 即程序，其后全部为参数。识别出的环境变量 `expand=false`、无平台标签；重复 KEY 保留最后值、位置取首次出现；整行全为 `KEY=VALUE`（无程序）→ 报错「缺少命令」。粘贴无前缀环境变量的文本时原样插入（行为与普通粘贴一致）；「解析」按钮可对手动编辑后的内容重新解析。解析结果走既有校验/保存/落盘链路，**不产生新文件格式**。
+
 ## 4. environment 与变量替换
 
 - 语法：逗号分隔多对 `KEY="value"`；value 必须双引号包裹，内部 `"` 写作 `\"`，内部逗号无需转义；键名大小写敏感且必须合法（不含 `=`、空白）。
 - 值**默认字面量直传**（不解析任何语法，FR-2.3 expand=off）；**前缀 `!` 开启替换**：`KEY="!${BASE}/bin"`。
+- **行级平台标签**（FR-2.13 / DESIGN §4.3）：条目引号后可选 `@平台`（`@all` 或无标签 = 全部平台）。生效表 = 标签命中当前平台解析链的条目（保持书写顺序）：同名键平台条目**就地覆盖**全部平台条目（后续条目的 `${VAR}` 引用取到覆盖后的值，与最终注入一致）；标签未命中的条目整体排除。同一 `(键, 标签)` 组合不得重复。
 - 替换规则（FR-2.3 / HLD D-4）：`${VAR}` 先查本服务 environment 表中**排在其前面**的条目，再查系统环境；仅支持 `${VAR}` 一种语法；未定义 → 校验错误并阻止保存/启动；不支持转义、嵌套与递归展开。
 - 示例（PATH_EXTRA 开启替换，引用其前面的 APP_HOME）：
 
@@ -126,6 +141,8 @@ matcher.2.template=端口 {0}
 [traysupervisor]
 log_lines=2000
 notify_on_failure=true
+platforms=home-mac:macos, office-win:windows
+current_platform=home-mac
 
 [program:dev-docs]
 name=文档站
@@ -149,7 +166,11 @@ directory=~/work/api
 spawn_mode=pipe
 autostart=false
 autorestart=always
-environment=HOME="/home/dev", NODE_ENV="development", LOG_DIR="!${HOME}/logs/api", PORT="3000"
+environment=HOME="/home/dev", NODE_ENV="development", LOG_DIR="!${HOME}/logs/api", PORT="3000", LOG_DIR="!${LOCALAPPDATA}\logs"@windows
+command.macos=/opt/homebrew/bin/node --max-old-space-size=512 main.js
+directory.windows=C:\work\api
+spawn_mode.windows=pipe
+term_interactive.windows=false
 redirect_stderr=false
 ```
 
@@ -163,8 +184,9 @@ redirect_stderr=false
 4. Matcher 正则可编译；`matcher.N` 编号连续；
 5. environment 值必须 UTF-8；开启替换的值中 `${VAR}` 引用可解析（本表顺序 + 系统环境）且无环；
 6. 枚举值合法（`autorestart`、`spawn_mode`、bool 取 `true`/`false`）；
-7. `term_interactive=true` 时 `spawn_mode` 必须为 `pty`；
-8. 未知键报错（见 §1）。
+7. `term_interactive=true` 时 `spawn_mode` 必须为 `pty`；**组合校验按平台展开**：默认组合与每个配置了 `spawn_mode`/`term_interactive` 变体的平台分别校验（FR-2.13）；
+8. 平台维度（FR-2.13）：`platforms` 名字 slug 合法、不与内置冲突、家族枚举合法；`current_platform` 必须已注册；变体键后缀与 env `@平台` 标签须为注册表成员（或 `all`）；默认 `command` 必填，`command.<平台>` 非空可切分；**当前平台**生效表 env 完整校验（含系统环境引用），**其他平台**的带标签条目仅做结构性校验（键名、NUL、同标签重复键；`${VAR}` 引用可能是目标平台系统变量，本机放行，留待目标平台加载/启动时校验）；
+9. 未知键报错（见 §1）。
 
 ## 8. 热加载行为（FR-2.6 / HLD RD-4）
 
@@ -173,6 +195,7 @@ redirect_stderr=false
 - **added**：新服务出现在菜单；不因热载自动启动（`autostart` 仅指应用启动时），需手动或 CLI 启动。
 - **removed**：运行中的服务按 FR-3.3 流程优雅停止后移出菜单。
 - **changed**：判定字段 = `command` / `directory` / `environment` / `spawn_mode` / `shell` / `autorestart` / `startsecs` / `stopwaitsecs` / `stdout_logfile*` / `logfile_compress` / `matcher.*` → 命中则重启该服务使配置生效；仅 `name` / `autostart` 变更即时生效、不重启。未受影响的服务一律不重启。
+- **平台变体（FR-2.13）**：命令行 / 工作目录 / 捕获模式 / 交互终端 / 环境变量按「各自解析链解析后的生效值」比较（变更前配置按旧链、变更后按新链）——改其他平台的变体或未命中本机标签的环境变量行不触发重启；`current_platform` / `platforms` 变更通过生效值变化自然反映。
 - CLI 侧提供手动 `reread`（查看差异）与 `update`（应用差异），语义同上（见 [CLI-SPEC](./CLI-SPEC.md)）。
 
 ## 9. 与原 TOML 草案（HLD v0.1 §3.1）的差异与迁移

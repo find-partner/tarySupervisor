@@ -1,8 +1,9 @@
 //! environment 解析/序列化（CONFIG-SPEC §4）与 `${VAR}` 变量展开（FR-2.3 / HLD D-4）。
 //!
-//! 文件格式：`environment=KEY="value", KEY2="!value2"`
+//! 文件格式：`environment=KEY="value", KEY2="!value2"@windows`
 //! - value 必须双引号包裹；内部 `"` 写作 `\"`；内部逗号无需转义；
 //! - 前缀 `!` 开启替换（expand=true）；无前缀 = 字面量直传；
+//! - 引号后可选 `@平台` 行级平台标签（FR-2.13）；`@all` 或无标签 = 全部平台；
 //! - 替换规则：仅支持 `${VAR}`，先查本服务 env 表中排在其前面的条目，再查系统环境；
 //!   未定义 → 错误；不支持转义、嵌套与递归展开。
 
@@ -29,12 +30,19 @@ pub fn parse_environment(s: &str) -> Result<Vec<EnvEntry>, String> {
         }
         // 键：读到 '='；不允许空白、引号、逗号
         let key_start = i;
-        while i < n && chars[i] != '=' && !chars[i].is_whitespace() && chars[i] != '"' && chars[i] != ','
+        while i < n
+            && chars[i] != '='
+            && !chars[i].is_whitespace()
+            && chars[i] != '"'
+            && chars[i] != ','
         {
             i += 1;
         }
         if i == key_start {
-            return Err(format!("environment 第 {} 项缺少合法键名", entries.len() + 1));
+            return Err(format!(
+                "environment 第 {} 项缺少合法键名",
+                entries.len() + 1
+            ));
         }
         let key: String = chars[key_start..i].iter().collect();
         skip_ws(&mut i);
@@ -75,9 +83,31 @@ pub fn parse_environment(s: &str) -> Result<Vec<EnvEntry>, String> {
             }
         }
         skip_ws(&mut i);
+        // 行级平台标签（FR-2.13）：引号后可选 `@平台`；`@all` 归一化为全部平台
+        let platform = if i < n && chars[i] == '@' {
+            i += 1;
+            let tag_start = i;
+            while i < n && chars[i] != ',' && !chars[i].is_whitespace() {
+                i += 1;
+            }
+            let tag: String = chars[tag_start..i].iter().collect();
+            if tag.is_empty() {
+                return Err(format!(
+                    "environment 键 {key} 的平台标签为空（@ 后应有平台名）"
+                ));
+            }
+            if tag.eq_ignore_ascii_case("all") {
+                None
+            } else {
+                Some(tag)
+            }
+        } else {
+            None
+        };
+        skip_ws(&mut i);
         if i < n {
             if chars[i] != ',' {
-                return Err(format!("environment 键 {key} 后应为 ',' 或结尾"));
+                return Err(format!("environment 键 {key} 后应为 ','、'@平台' 或结尾"));
             }
             i += 1;
         }
@@ -85,13 +115,19 @@ pub fn parse_environment(s: &str) -> Result<Vec<EnvEntry>, String> {
             Some(rest) => (true, rest.to_string()),
             None => (false, value),
         };
-        entries.push(EnvEntry { key, value, expand });
+        entries.push(EnvEntry {
+            key,
+            value,
+            expand,
+            platform,
+        });
     }
     Ok(entries)
 }
 
 /// 序列化为 environment= 的值。转义与解析规则对称且最小化：
-/// `"` → `\"`；`\` 仅在会被误读为转义时（后跟 `"`/`\`/空白/末尾）双写，其余保留可读。
+/// `"` → `\"`；`\` 仅在会被误读为转义时（后跟 `"`/`\`/空白/末尾）双写，其余保留可读；
+/// 带平台标签的条目在引号后写 `@平台`。
 pub fn serialize_environment(entries: &[EnvEntry]) -> String {
     entries
         .iter()
@@ -101,7 +137,12 @@ pub fn serialize_environment(entries: &[EnvEntry]) -> String {
             } else {
                 e.value.clone()
             };
-            format!("{}=\"{}\"", e.key, escape_quoted(&v))
+            let tag = e
+                .platform
+                .as_ref()
+                .map(|p| format!("@{p}"))
+                .unwrap_or_default();
+            format!("{}=\"{}\"{}", e.key, escape_quoted(&v), tag)
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -200,7 +241,10 @@ pub fn resolve_env(
         }
         let value = if e.expand {
             let local_at = map.clone();
-            let lookup = EnvLookup { local: &local_at, system };
+            let lookup = EnvLookup {
+                local: &local_at,
+                system,
+            };
             match expand_env_value(&e.value, &|v| lookup.get(v)) {
                 Ok(v) => v,
                 Err(err) => {
@@ -226,7 +270,10 @@ mod tests {
 
     #[test]
     fn parses_spec_example() {
-        let entries = parse_environment(r#"APP_HOME="C:\opt\myapp", PATH_EXTRA="!${APP_HOME}\bin", GREETING="hello, world""#).unwrap();
+        let entries = parse_environment(
+            r#"APP_HOME="C:\opt\myapp", PATH_EXTRA="!${APP_HOME}\bin", GREETING="hello, world""#,
+        )
+        .unwrap();
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].key, "APP_HOME");
         assert_eq!(entries[0].value, r"C:\opt\myapp");
@@ -239,8 +286,7 @@ mod tests {
 
     #[test]
     fn parses_escaped_quote_and_comma() {
-        let entries =
-            parse_environment(r#"A="say \"hi\", ok", B="back\\slash""#).unwrap();
+        let entries = parse_environment(r#"A="say \"hi\", ok", B="back\\slash""#).unwrap();
         assert_eq!(entries[0].value, r#"say "hi", ok"#);
         assert_eq!(entries[1].value, r"back\slash");
     }
@@ -256,14 +302,89 @@ mod tests {
     #[test]
     fn serialize_roundtrip() {
         let entries = vec![
-            EnvEntry { key: "APP_HOME".into(), value: r"C:\opt\myapp".into(), expand: false },
-            EnvEntry { key: "PATH_EXTRA".into(), value: r"${APP_HOME}\bin".into(), expand: true },
-            EnvEntry { key: "MSG".into(), value: "he said \"hi\", ok".into(), expand: false },
-            EnvEntry { key: "TRAIL".into(), value: "end\\".into(), expand: false },
+            EnvEntry {
+                key: "APP_HOME".into(),
+                value: r"C:\opt\myapp".into(),
+                expand: false,
+                platform: None,
+            },
+            EnvEntry {
+                key: "PATH_EXTRA".into(),
+                value: r"${APP_HOME}\bin".into(),
+                expand: true,
+                platform: None,
+            },
+            EnvEntry {
+                key: "MSG".into(),
+                value: "he said \"hi\", ok".into(),
+                expand: false,
+                platform: None,
+            },
+            EnvEntry {
+                key: "TRAIL".into(),
+                value: "end\\".into(),
+                expand: false,
+                platform: None,
+            },
         ];
         let s = serialize_environment(&entries);
         let back = parse_environment(&s).unwrap();
         assert_eq!(back, entries, "serialized = {s}");
+    }
+
+    // ---------- 行级平台标签（FR-2.13）----------
+
+    #[test]
+    fn parses_platform_tags() {
+        let entries = parse_environment(
+            r#"PORT="3000", LOG_DIR="!${LOCALAPPDATA}\logs"@windows, EXTRA="/opt/bin" @macos"#,
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].platform, None);
+        assert_eq!(entries[1].platform.as_deref(), Some("windows"));
+        assert_eq!(entries[1].value, r"${LOCALAPPDATA}\logs");
+        assert!(entries[1].expand);
+        assert_eq!(entries[2].platform.as_deref(), Some("macos"));
+    }
+
+    #[test]
+    fn tag_all_normalizes_to_none() {
+        let entries = parse_environment(r#"A="1"@all"#).unwrap();
+        assert_eq!(entries[0].platform, None);
+    }
+
+    #[test]
+    fn tag_serialize_roundtrip() {
+        let entries = vec![
+            EnvEntry {
+                key: "A".into(),
+                value: "shared".into(),
+                expand: false,
+                platform: None,
+            },
+            EnvEntry {
+                key: "B".into(),
+                value: "win only".into(),
+                expand: false,
+                platform: Some("windows".into()),
+            },
+            EnvEntry {
+                key: "C".into(),
+                value: "!${A}/m".into(),
+                expand: true,
+                platform: Some("home-mac".into()),
+            },
+        ];
+        let s = serialize_environment(&entries);
+        assert_eq!(parse_environment(&s).unwrap(), entries, "serialized = {s}");
+        assert!(s.contains(r#"B="win only"@windows"#), "{s}");
+    }
+
+    #[test]
+    fn empty_tag_rejected() {
+        assert!(parse_environment(r#"A="1"@, B="2""#).is_err());
+        assert!(parse_environment(r#"A="1"@ "#).is_err());
     }
 
     #[test]
@@ -278,9 +399,24 @@ mod tests {
     #[test]
     fn expands_from_local_then_system() {
         let entries = vec![
-            EnvEntry { key: "A".into(), value: "1".into(), expand: false },
-            EnvEntry { key: "B".into(), value: "${A}/${SYS}".into(), expand: true },
-            EnvEntry { key: "C".into(), value: "${B}!".into(), expand: true },
+            EnvEntry {
+                key: "A".into(),
+                value: "1".into(),
+                expand: false,
+                platform: None,
+            },
+            EnvEntry {
+                key: "B".into(),
+                value: "${A}/${SYS}".into(),
+                expand: true,
+                platform: None,
+            },
+            EnvEntry {
+                key: "C".into(),
+                value: "${B}!".into(),
+                expand: true,
+                platform: None,
+            },
         ];
         let sys = |k: &str| (k == "SYS").then(|| "sysval".to_string());
         let map = resolve_env(&entries, &sys).unwrap();
@@ -296,6 +432,7 @@ mod tests {
             key: "LIT".into(),
             value: "${HOME}/x".into(),
             expand: false,
+            platform: None,
         }];
         let map = resolve_env(&entries, &|_| None).unwrap();
         assert_eq!(map["LIT"], "${HOME}/x");
@@ -307,6 +444,7 @@ mod tests {
             key: "X".into(),
             value: "${NOPE}/y".into(),
             expand: true,
+            platform: None,
         }];
         let errs = resolve_env(&entries, &|_| None).unwrap_err();
         assert!(errs[0].contains("NOPE"));
@@ -318,6 +456,7 @@ mod tests {
             key: "X".into(),
             value: "$HOME and ${HOME}".into(),
             expand: true,
+            platform: None,
         }];
         let map = resolve_env(&entries, &|k| (k == "HOME").then(|| "/h".to_string())).unwrap();
         // $HOME（无花括号）不支持，按字面量保留
@@ -326,7 +465,12 @@ mod tests {
 
     #[test]
     fn unclosed_reference_is_error() {
-        let entries = vec![EnvEntry { key: "X".into(), value: "${HOME".into(), expand: true }];
+        let entries = vec![EnvEntry {
+            key: "X".into(),
+            value: "${HOME".into(),
+            expand: true,
+            platform: None,
+        }];
         assert!(resolve_env(&entries, &|_| None).is_err());
     }
 }

@@ -1,9 +1,59 @@
 //! 表单状态模型（FR-2.8）：与 ServiceBriefOut / ServiceInput 的双向转换，
 //! 以及"每页独立保存"的合并规则。
+//!
+//! 标签页分组（DESIGN §2）：① 基础配置（命令行/平台变体/工作目录/shell/捕获模式/
+//! 交互终端/环境变量）② 启动策略（autostart 等）③ 日志 ④ 快捷项。
+
+use std::collections::BTreeMap;
 
 use leptos::*;
 
-use crate::dto::{EnvEntry, MatcherConfig, ServiceBriefOut, ServiceInput};
+use crate::dto::{EnvEntry, MatcherConfig, PlatformVariantDto, ServiceBriefOut, ServiceInput};
+
+/// 平台变体子表单（DESIGN §4.7）：空串 = 跟随默认值
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlatformForm {
+    pub command_line: String,
+    pub cwd: String,
+    /// "" | "Pipe" | "Pty"
+    pub spawn_mode: String,
+    /// "" | "true" | "false"
+    pub term_interactive: String,
+}
+
+impl PlatformForm {
+    fn into_dto(self) -> PlatformVariantDto {
+        PlatformVariantDto {
+            command_line: (!self.command_line.trim().is_empty())
+                .then(|| self.command_line.trim().to_string()),
+            cwd: (!self.cwd.trim().is_empty()).then(|| self.cwd.trim().to_string()),
+            spawn_mode: (!self.spawn_mode.is_empty()).then_some(self.spawn_mode),
+            term_interactive: match self.term_interactive.as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            },
+        }
+    }
+
+    fn from_dto(d: PlatformVariantDto) -> Self {
+        Self {
+            command_line: d.command_line.unwrap_or_default(),
+            cwd: d.cwd.unwrap_or_default(),
+            spawn_mode: d
+                .spawn_mode
+                .map(|m| match m.to_ascii_lowercase().as_str() {
+                    "pty" => "Pty".into(),
+                    _ => "Pipe".into(),
+                })
+                .unwrap_or_default(),
+            term_interactive: d
+                .term_interactive
+                .map(|b| b.to_string())
+                .unwrap_or_default(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct FormState {
@@ -12,6 +62,10 @@ pub struct FormState {
     pub command_line: String,
     pub cwd: String,
     pub env: Vec<EnvEntry>,
+    /// 基础配置字段的平台变体（FR-2.13）；键 ∈ 平台注册表
+    pub platform: BTreeMap<String, PlatformForm>,
+    /// 当前平台生效命令行（list_services 回显，编辑页「本机实际执行」提示用）
+    pub effective_command_line: String,
     pub redirect_stderr: bool,
     pub autostart: bool,
     pub autorestart: String,
@@ -30,6 +84,17 @@ pub struct FormState {
     pub matchers: Vec<MatcherConfig>,
 }
 
+impl FormState {
+    /// 读取平台变体子表单（无条目 = 全空，跟随默认）
+    pub fn platform_get(&self, platform: &str) -> PlatformForm {
+        self.platform.get(platform).cloned().unwrap_or_default()
+    }
+
+    pub fn platform_set(&mut self, platform: &str, pf: PlatformForm) {
+        self.platform.insert(platform.to_string(), pf);
+    }
+}
+
 pub fn form_from_brief(b: &ServiceBriefOut) -> FormState {
     FormState {
         id: b.config.id.clone(),
@@ -37,6 +102,12 @@ pub fn form_from_brief(b: &ServiceBriefOut) -> FormState {
         command_line: b.command_line.clone(),
         cwd: b.config.cwd.clone().unwrap_or_default(),
         env: b.config.env.clone(),
+        platform: b
+            .platform
+            .iter()
+            .map(|(p, d)| (p.clone(), PlatformForm::from_dto(d.clone())))
+            .collect(),
+        effective_command_line: b.effective_command_line.clone(),
         redirect_stderr: b.config.redirect_stderr,
         autostart: b.config.autostart,
         autorestart: b.config.autorestart.clone(),
@@ -75,7 +146,13 @@ pub fn form_from_brief(b: &ServiceBriefOut) -> FormState {
             .as_ref()
             .map(|f| f.max_files.to_string())
             .unwrap_or_else(|| "3".into()),
-        log_compress: b.config.log.file.as_ref().map(|f| f.compress).unwrap_or(false),
+        log_compress: b
+            .config
+            .log
+            .file
+            .as_ref()
+            .map(|f| f.compress)
+            .unwrap_or(false),
         matchers: b.config.matchers.clone(),
     }
 }
@@ -90,6 +167,11 @@ pub fn input_from_form(f: &FormState) -> ServiceInput {
             (!c.is_empty()).then_some(c)
         },
         env: f.env.clone(),
+        platform: f
+            .platform
+            .iter()
+            .map(|(p, pf)| (p.clone(), pf.clone().into_dto()))
+            .collect(),
         redirect_stderr: f.redirect_stderr,
         autostart: f.autostart,
         autorestart: f.autorestart.clone(),
@@ -118,6 +200,8 @@ pub fn blank_form() -> FormState {
         command_line: String::new(),
         cwd: String::new(),
         env: vec![],
+        platform: BTreeMap::new(),
+        effective_command_line: String::new(),
         redirect_stderr: false,
         autostart: false,
         autorestart: "No".into(),
@@ -145,6 +229,11 @@ pub fn blank_form() -> FormState {
 /// 编辑模式的"每页独立保存"（FR-2.8）：以加载时快照 `loaded` 为基底，
 /// 仅叠入 `tab` 页对应字段，避免把其他页的未保存变更一并提交。
 /// 向导模式（新建）不走此合并——最后一步整体保存。
+///
+/// 页面分组（DESIGN §2）：
+/// 0 基础配置 = id/name/命令行/平台变体/工作目录/shell/捕获模式/交互终端/环境变量；
+/// 1 启动策略 = autostart/autorestart/startsecs/startretries/stopwaitsecs；
+/// 2 日志 = redirect_stderr + 文件策略；3 快捷项 = matchers。
 pub fn merged_for_save(loaded: &FormState, current: &FormState, tab: usize) -> FormState {
     let mut m = loaded.clone();
     match tab {
@@ -153,18 +242,21 @@ pub fn merged_for_save(loaded: &FormState, current: &FormState, tab: usize) -> F
             m.name = current.name.clone();
             m.command_line = current.command_line.clone();
             m.cwd = current.cwd.clone();
+            m.platform = current.platform.clone();
+            m.env = current.env.clone();
             m.spawn_mode = current.spawn_mode.clone();
             m.shell = current.shell;
             m.term_interactive = current.term_interactive;
+        }
+        1 => {
             m.autostart = current.autostart;
             m.autorestart = current.autorestart.clone();
             m.startsecs = current.startsecs.clone();
             m.startretries = current.startretries.clone();
             m.stopwaitsecs = current.stopwaitsecs.clone();
-            m.redirect_stderr = current.redirect_stderr;
         }
-        1 => m.env = current.env.clone(),
         2 => {
+            m.redirect_stderr = current.redirect_stderr;
             m.log_enabled = current.log_enabled;
             m.log_path = current.log_path.clone();
             m.log_max_bytes = current.log_max_bytes.clone();

@@ -32,6 +32,66 @@ pub fn shell_quote_posix(tok: &str) -> String {
     format!("'{}'", tok.replace('\'', r"'\''"))
 }
 
+/// 粘贴整行解析（FR-2.12 / DESIGN §3）：按 §3.4 切分 token 后，
+/// 从头扫描形如 `KEY=VALUE` 的前缀 token 记为环境变量（Unix 惯例），
+/// 第一个不符合该形态的 token 即程序，其后全部为参数。
+///
+/// - 环境变量条目 `expand=false`（字面量直传）、无平台标签；
+/// - 重复 KEY 保留最后值、位置取首次出现（与 §4.3 就地覆盖语义一致）；
+/// - 整行全为 `KEY=VALUE`（没有程序）→ Err「缺少命令」；
+/// - 无前缀环境变量 → 与 [`split_command_line`] 等价（返回空 env 表）。
+///
+/// 返回（环境变量条目, 剩余命令行单行）。
+pub fn split_env_prefixed_line(
+    line: &str,
+) -> Result<(Vec<crate::config::EnvEntry>, String), String> {
+    let tokens = tokenize(line)?;
+    let mut prefix_end = 0;
+    while prefix_end < tokens.len() {
+        match tokens[prefix_end].split_once('=') {
+            Some((k, _)) if is_env_key(k) => prefix_end += 1,
+            _ => break,
+        }
+    }
+    if prefix_end == tokens.len() {
+        let sample = tokens.first().map(String::as_str).unwrap_or("");
+        return Err(format!(
+            "缺少命令——「{sample}=…」均为环境变量赋值，其后应跟程序与参数"
+        ));
+    }
+    // 前缀 token → 有序 KV（重复 KEY 就地覆盖）
+    let mut env: Vec<crate::config::EnvEntry> = Vec::new();
+    for tok in &tokens[..prefix_end] {
+        let (k, v) = tok
+            .split_once('=')
+            .expect("前缀 token 已通过 KEY= 形态校验");
+        if let Some(slot) = env.iter_mut().find(|e| e.key == k) {
+            slot.value = v.to_string();
+        } else {
+            env.push(crate::config::EnvEntry {
+                key: k.to_string(),
+                value: v.to_string(),
+                expand: false,
+                platform: None,
+            });
+        }
+    }
+    let (prog, args) = tokens[prefix_end..]
+        .split_first()
+        .expect("prefix_end < len");
+    Ok((env, join_command_line(prog, args)))
+}
+
+/// 合法环境变量键名：`[A-Za-z_][A-Za-z0-9_]*`
+fn is_env_key(k: &str) -> bool {
+    let mut chars = k.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 fn tokenize(s: &str) -> Result<Vec<String>, String> {
     let chars: Vec<char> = s.chars().collect();
     let mut tokens = Vec::new();
@@ -121,7 +181,10 @@ mod tests {
         let (prog, args) =
             split_command_line(r#"python -m http.server 8000 --directory "C:\work\docs""#).unwrap();
         assert_eq!(prog, "python");
-        assert_eq!(args, vec!["-m", "http.server", "8000", "--directory", r"C:\work\docs"]);
+        assert_eq!(
+            args,
+            vec!["-m", "http.server", "8000", "--directory", r"C:\work\docs"]
+        );
     }
 
     #[test]
@@ -146,7 +209,10 @@ mod tests {
         assert_eq!(prog, "python3");
         assert_eq!(args[0], "-u");
         assert_eq!(args[1], "-c");
-        assert_eq!(args[2], r"import time,sys;[(sys.stdout.write('\r\033[32m'+'█'*(i%40)+'\033[0m %d'%i),sys.stdout.flush(),time.sleep(0.1)) for i in range(80)]");
+        assert_eq!(
+            args[2],
+            r"import time,sys;[(sys.stdout.write('\r\033[32m'+'█'*(i%40)+'\033[0m %d'%i),sys.stdout.flush(),time.sleep(0.1)) for i in range(80)]"
+        );
     }
 
     #[test]
@@ -198,7 +264,105 @@ mod tests {
 
     #[test]
     fn join_roundtrip_spaces_and_quotes() {
-        roundtrip(r"C:\Program Files\app.exe", &["a b", r#"q "inner" q"#, "", r"C:\end\"]);
+        roundtrip(
+            r"C:\Program Files\app.exe",
+            &["a b", r#"q "inner" q"#, "", r"C:\end\"],
+        );
         roundtrip("/bin/echo", &["hello world"]);
+    }
+
+    // ---------- split_env_prefixed_line（FR-2.12）----------
+
+    fn envs(line: &str) -> (Vec<(String, String)>, String) {
+        let (env, cmd) = split_env_prefixed_line(line).unwrap();
+        (env.into_iter().map(|e| (e.key, e.value)).collect(), cmd)
+    }
+
+    #[test]
+    fn paste_spec_example_splits_env_prefix() {
+        let (env, cmd) = envs(
+            "ENABLE_CORS=true USE_PROXY=true PROXY_URL=http://127.0.0.1:7890 open-websearch --port=1123",
+        );
+        assert_eq!(
+            env,
+            vec![
+                ("ENABLE_CORS".into(), "true".into()),
+                ("USE_PROXY".into(), "true".into()),
+                ("PROXY_URL".into(), "http://127.0.0.1:7890".into()),
+            ]
+        );
+        assert_eq!(cmd, "open-websearch --port=1123");
+    }
+
+    #[test]
+    fn paste_quoted_value_keeps_spaces() {
+        let (env, cmd) = envs(r#"FOO="hello world" python -m http.server 8000"#);
+        assert_eq!(env, vec![("FOO".into(), "hello world".into())]);
+        assert_eq!(cmd, "python -m http.server 8000");
+    }
+
+    #[test]
+    fn paste_kv_after_program_is_arg() {
+        let (env, cmd) = envs("python FOO=bar x");
+        assert!(env.is_empty());
+        assert_eq!(cmd, "python FOO=bar x");
+    }
+
+    #[test]
+    fn paste_all_kv_is_error() {
+        assert!(split_env_prefixed_line("FOO=bar").is_err());
+        assert!(split_env_prefixed_line("FOO=bar A=1")
+            .unwrap_err()
+            .contains("缺少命令"));
+    }
+
+    #[test]
+    fn paste_plain_command_unchanged() {
+        let (env, cmd) = envs(r#"python -m http.server 8000 --directory "C:\work\docs""#);
+        assert!(env.is_empty());
+        // join 可能去掉不必要的引号（roundtrip 安全）：比较切分结果
+        let (p, a) = split_command_line(&cmd).unwrap();
+        assert_eq!(p, "python");
+        assert_eq!(
+            a,
+            vec!["-m", "http.server", "8000", "--directory", r"C:\work\docs"]
+        );
+    }
+
+    #[test]
+    fn paste_duplicate_key_last_wins_first_position() {
+        let (env, cmd) = envs("A=1 B=2 A=3 run");
+        assert_eq!(
+            env,
+            vec![("A".into(), "3".into()), ("B".into(), "2".into())]
+        );
+        assert_eq!(cmd, "run");
+    }
+
+    #[test]
+    fn paste_empty_value_and_flags() {
+        // KEY=（空值）合法；--flag=value 不是环境变量（键含 '-'）
+        let (env, cmd) = envs("EMPTY= app --flag=value");
+        assert_eq!(env, vec![("EMPTY".into(), "".into())]);
+        assert_eq!(cmd, "app --flag=value");
+    }
+
+    #[test]
+    fn paste_env_key_must_be_identifier() {
+        // 数字开头 / 含连字符的「KEY=」不算前缀环境变量，整体视为程序
+        assert!(split_env_prefixed_line("1A=b run").unwrap().0.is_empty());
+        assert!(split_env_prefixed_line("A-B=c run").unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn paste_roundtrip_into_split() {
+        let line = "K=\"v v\" node --max-old-space-size=512 main.js";
+        let (env, cmd) = split_env_prefixed_line(line).unwrap();
+        let (prog, args) = split_command_line(&cmd).unwrap();
+        assert_eq!(prog, "node");
+        assert_eq!(args, vec!["--max-old-space-size=512", "main.js"]);
+        assert_eq!(env[0].key, "K");
+        assert_eq!(env[0].value, "v v");
+        assert!(!env[0].expand);
     }
 }

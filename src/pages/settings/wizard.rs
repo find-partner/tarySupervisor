@@ -1,12 +1,19 @@
-//! 新建向导（FR-2.9）：四步引导，前两步可跳过，最后一步整体保存。
+//! 新建向导（FR-2.9 / DESIGN §5）：四步引导，后三步可跳过，最后一步整体保存。
+//! 平台变体不进向导——保存后在编辑页「基础配置 → 平台变体」补充。
 
 use leptos::*;
 
 use super::basic::basic_panel;
-use super::panels::{env_panel, log_panel, matcher_panel};
 use super::form::FormState;
+use super::panels::{log_panel, matcher_panel, strategy_panel};
+use crate::dto::PlatformInfoDto;
 
-const WIZARD_STEPS: [&str; 4] = ["基本设置", "环境变量（可跳过）", "日志（可跳过）", "快捷项（可跳过）"];
+const WIZARD_STEPS: [&str; 4] = [
+    "基础配置",
+    "启动策略（可跳过）",
+    "日志（可跳过）",
+    "快捷项（可跳过）",
+];
 
 #[allow(clippy::too_many_arguments)]
 pub fn wizard_mode(
@@ -15,6 +22,7 @@ pub fn wizard_mode(
     dirty: RwSignal<Vec<bool>>,
     errors: RwSignal<Vec<String>>,
     step_err: RwSignal<String>,
+    platform_info: RwSignal<PlatformInfoDto>,
     on_next: impl Fn(()) + Copy + 'static,
     on_prev: impl Fn(()) + Copy + 'static,
     on_save: impl Fn(()) + Copy + 'static,
@@ -36,8 +44,8 @@ pub fn wizard_mode(
         </div>
 
         {move || match step {
-            0 => basic_panel(form, dirty, true).into_view(),
-            1 => env_panel(form, dirty, on_preview).into_view(),
+            0 => basic_panel(form, dirty, true, false, platform_info, on_preview).into_view(),
+            1 => strategy_panel(form, dirty).into_view(),
             2 => log_panel(form, dirty).into_view(),
             _ => matcher_panel(form, dirty).into_view(),
         }}
