@@ -229,8 +229,15 @@ pub fn TermPage(id: String) -> impl IntoView {
                     <pre class="termscreen">
                         {move || {
                             screen.get().map(|sc| {
+                                // 每行渲染后补真实换行（.termscreen white-space:pre 依赖
+                                // \n 文本节点分行；曾因缺失导致整屏连成一行，FR-6.6）
                                 sc.lines.into_iter().map(|row| {
-                                    render_runs(&row)
+                                    let mut nodes: Vec<leptos::View> = render_runs(&row)
+                                        .into_iter()
+                                        .map(|el| el.into_view())
+                                        .collect();
+                                    nodes.push("\n".into_view());
+                                    nodes
                                 }).collect::<Vec<_>>()
                             })
                         }}

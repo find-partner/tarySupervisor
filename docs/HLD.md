@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 产品名称 | TraySupervisor（暂定名） |
-| 版本 | v0.3（草案） |
-| 日期 | 2026-10-04 |
+| 版本 | v0.4（草案） |
+| 日期 | 2026-10-05 |
 | 依据 | [软件需求规格说明书（SRS）](./SRS.md) |
 | 配套文档 | [配置文件规范（CONFIG-SPEC）](./CONFIG-SPEC.md)、[命令行工具规格（CLI-SPEC）](./CLI-SPEC.md) |
 
@@ -30,7 +30,7 @@
 │     │              │                  │          │            │
 │  ┌──┴─────┐  ┌─────┴─────┐  ┌─────────┴──┐  ┌────┴─────────┐  │
 │  │ config │  │  service  │  │    log     │  │    tray      │  │
-│  │ 模块    │  │  管理器    │  │  管道       │  │ 菜单构建/防抖 │  │
+│  │ 模块    │  │  管理器    │  │  管道       │  │ 菜单构建/就地更新 │  │
 │  │INI读写 │  │  状态机     │  │ 环形缓冲    │  └────▲─────────┘  │
 │  │校验/热载 │  │  spawn/stop│  │ 轮转文件    │       │            │
 │  └────────┘  └─────┬─────┘  │ Matcher    │  ┌────┴─────────┐  │
@@ -50,7 +50,7 @@
 
 1. **核心与 UI 解耦**：`config` / `service` / `log` / `pty` 为纯 Rust 模块（crate workspace 内的 `core` 成员），不依赖 `tauri`，可独立单测（NFR-8）。
 2. **单进程托管**：服务是本进程的直接子进程（SRS C3）；生命周期与 Tauri 窗口无关，与整个应用进程绑定。
-3. **事件驱动刷新**：所有状态变化经内部广播通道（`tokio::sync::broadcast`）分发：托盘菜单重建、前端事件推送共用同一事件源。
+3. **事件驱动刷新**：所有状态变化经内部广播通道（`tokio::sync::broadcast`）分发：托盘菜单刷新、前端事件推送共用同一事件源。
 4. **平台差异集中在两处**：`process` 平台分支（Unix/Windows 停止策略）与 `tray` 平台分支（菜单能力开关），其余代码平台无关。
 
 ---
@@ -61,7 +61,7 @@
 |------|------|------|
 | 框架 | Tauri v2 | 托盘、窗口、IPC、打包 |
 | 前端 | Leptos（或 Yew）+ Trunk | Rust→WASM，零 Node；`withGlobalTauri = true` |
-| 托盘菜单 | `tauri::tray`（底层 tray-icon/muda） | 动态 `set_menu` 重建；`show_menu_on_left_click` 配置 |
+| 托盘菜单 | `tauri::tray`（底层 tray-icon/muda） | 持久菜单就地更新（仅服务集合变化时 `set_menu` 重建）；`show_menu_on_left_click` 配置 |
 | 异步运行时 | tokio | 进程管理、日志读取、事件广播 |
 | 进程停止 | Unix：`libc::killpg`（setsid 进程组）；Windows：Job Object（`CREATE_SUSPENDED` + `AssignToJobObject`，手写 `windows-sys` 绑定，spike 已验证） | 兜底 `kill_tree` |
 | PTY | `portable-pty`（WezTerm 生态） | 仅 PTY 启动模式加载 |
@@ -136,8 +136,8 @@ RUNNING ──意外退出──► EXITED ──autorestart=OnFailure/Always─
 
 - **STARTING → RUNNING 判定**：进程存活超过 `startsecs`（默认 3 秒）或产生首行输出。
 - 启动（spawn 流程）：
-  1. `resolve_env()` 得到环境变量表；
-  2. 构建 `std::process::Command`（不经 shell）；
+  1. `resolve_env()` 得到环境变量表；未显式配置 `PATH` 时注入登录 shell PATH 兜底（GUI 宿主 PATH 精简，见 `service::shellenv`，CONFIG-SPEC §3.5）；
+  2. 构建 `std::process::Command`（不经 shell；`shell=true` 时经 `$SHELL -ilc` 包装以继承用户 shell 环境，CONFIG-SPEC §3.5）；
   3. Unix：`pre_exec(setsid)`（子进程自成会话/进程组）；Windows：`CREATE_SUSPENDED` 创建 → `AssignToJobObject`（Job 设 `KILL_ON_JOB_CLOSE`）→ `ResumeThread`；
   4. Pipe 模式：接管 stdout/stderr 两根管道，stdin 置空关闭；PTY 模式：`portable-pty` 打开 master/slave 并 spawn；
   5. 注册到运行态表 `HashMap<ServiceId, RunningService>`。
@@ -175,8 +175,13 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 
 ### 3.5 `app::tray` — 托盘菜单（Tauri 层）
 
-- 订阅 `StateChanged` / `MatchHit` / `ConfigDelta` 事件 → **防抖合并（300ms）** → 全量重建菜单 → `tray.set_menu()`。
+- 订阅 `StateChanged` / `MatchHit` / `ConfigDelta` 事件，按类别分流（SRS FR-1.6）：
+  - **StateChanged** → 持久菜单项**就地更新**：状态行 `set_text` + `set_icon`（色点）、启动/停止/重启 `set_enabled`、tooltip 更新；
+  - **MatchHit** → 该服务子菜单内**移除旧快捷项、追加新快捷项**（哈希列表未变化时跳过）；
+  - **ConfigDelta（服务集合变化）** → 才整体重建菜单并 `tray.set_menu()`。
+  - 理由：菜单展开期间调用 `set_menu()` 替换菜单对象会被系统直接关闭（"菜单消失"问题）；就地更新（muda `set_text/set_icon/set_enabled`、`Submenu::append/remove`）不触发关闭，未展开项最迟下次展开呈现新值。
 - 菜单 ID 编码：`svc:<id>:start|stop|restart|log|term|edit`、`match:<svc_id>:<hash>`、`app:settings|quit|start_all|stop_all`。
+- 数据源与设置页一致：菜单构建/就地更新统一读 `ServiceManager::list()` 快照（SRS FR-1.10）。
 - 平台能力开关（编译期/运行时检测）：
 
 | 能力 | Windows | macOS | Linux |
@@ -191,6 +196,8 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 
 - 页面：服务列表 / 服务编辑（含 env KV 表、Matcher 表）/ 日志查看 / 终端视图 / 关于。
 - 与后端交互仅通过 Tauri IPC（下节）；日志与终端视图均为 `listen("log-appended")` 增量渲染，终端视图额外接 `vte` WASM 解析（或后端解析后传渲染指令，见 §5 决策 D-3）。
+- **共享服务数据源（`store`，SRS FR-1.10）**：每个窗口内以全局信号持有 `list_services` 快照，订阅 `service-state-changed` 就地更新对应条目、`config-changed`/`config-invalid` 全量刷新；设置页服务列表与编辑页操作栏（FR-2.11）共用该数据源，保证与托盘菜单状态一致。
+- **编辑页服务操作栏（SRS FR-2.11）**：编辑模式标签栏上方提供 状态显示（色点+状态+PID）、启动/停止/重启（按状态启用/禁用）、查看日志、终端视图；动作分别调用 `start/stop/restart_service` 与 `open_log_window`/`open_term_window`。
 - **设置页三态（SRS FR-2.7~2.9）**：
   - **空态**：未选中且未新建 → 编辑区显示产品简介 + "请新建配置"引导，无表单；
   - **编辑模式**：按标签页分组（基本设置 / 环境变量 / 日志 / 快捷项），每页独立"保存本页"（以整份配置快照合并提交 upsert），未保存变更在标签上标记"未保存"，切换页面不隐式保存；
@@ -198,6 +205,7 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 - **保存生效提示（SRS FR-2.10）**：保存成功后若服务 RUNNING/STARTING → 编辑区横幅"需重启生效" + "立即重启"按钮（`restart_service`）。
 - **列表/编辑回显一致性**：`list_services` 返回的 brief 以**嵌套** `config` 对象反序列化（前端 DTO 与 core `ServiceBrief` 形状一一对应；禁用 flatten —— 曾因 flatten 误配导致列表无名、编辑空白，见 D-14）。
 - **终端读写（SRS FR-6.4/6.5）**：`term_interactive && Pty` 的服务在终端窗口提供"只读/可写"开关与键盘/粘贴输入转发（`write_stdin`），控制序列按 ANSI 字节直传。
+- **终端渲染细节（SRS FR-6.6）**：屏幕帧每行渲染后补真实换行（`white-space: pre` 依赖 `\n` 文本节点分行）；服务每次启动时后端清空 vte 栅格（会话隔离，PTY 只保留当前会话）。
 
 ### 3.7 `app::ipc` — 本地 IPC 服务（CLI 接入，Tauri 层）
 
@@ -218,6 +226,7 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 | `upsert_service` | `ServiceConfig` | 校验结果 / 保存结果 |
 | `delete_service` | `id` | 结果（运行中则报错要求先停止或确认） |
 | `start_service` / `stop_service` / `restart_service` | `id` | 立即返回，结果经事件推送 |
+| `open_log_window` / `open_term_window` | `id` | 打开（或聚焦）该服务的日志窗口 / 终端视图窗口（托盘菜单与编辑页操作栏共用入口） |
 | `get_log` | `id, since_index, limit` | `Vec<LogLine>`（历史回放，滚动加载用） |
 | `open_match_url` | `svc_id, hash` | 校验 http/https 后 `tauri-plugin-opener` 打开 |
 | `get_env_resolved_preview` | `ServiceConfig` | 展开后的 env 预览（编辑页"预览"按钮） |
@@ -248,13 +257,16 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 | D-4 | env 替换只支持 `${VAR}`、按表顺序解析、不支持转义、未定义报错 | 语义最小闭环，规避转义与双语法复杂度（SRS R7） |
 | D-5 | 停止策略：TERM/CTRL_BREAK → 超时 → 强杀；Windows 全程 Job Object 兜底 | Windows 无信号，树杀必须靠 Job（SRS R3） |
 | D-6 | 日志双 sink（内存必选 + 文件可选），Matcher 在合并器之后 | 关闭文件日志仍可查看；Matcher 与存储解耦 |
-| D-7 | 菜单全量重建 + 300ms 防抖，不做增量更新 | muda/DE 菜单增量 API 不一致，全量重建最可靠；防抖限频（FR-1.6） |
+| D-7 | 菜单**持久化 + 菜单项就地更新**（状态/启用位/图标 `set_*`，Matcher 项子菜单内增删），仅服务集合变化时全量重建 | 菜单展开期间 `set_menu()` 会被系统直接关闭（"菜单消失"缺陷）；就地更新不关闭菜单且天然免防抖（FR-1.6 由"防抖重建"改为"就地更新"） |
 | D-8 | 配置文件采用 supervisord 相似风格 INI（`[program:<id>]` 分节、字段名对齐、特有功能同风格扩展） | 复用 Supervisor 用户习惯与文档资产；INI 足以表达现有语义模型（environment 有序对 + matcher 编号键）；规范见 [CONFIG-SPEC](./CONFIG-SPEC.md) |
 | D-9 | 新增 `traysvctl` CLI 与本地 IPC 通道（UDS/Named Pipe，JSON-RPC），CLI 与 GUI 共用 `crates/core` | 提供脚本化 / SSH 会话的管理入口；不引入守护进程，CLI 仅是常驻应用的客户端（C3、D-2 不变）；规范见 [CLI-SPEC](./CLI-SPEC.md) |
 | D-10 | GUI 保存**不自动重启**运行中服务：`apply_saved_config` 只换配置，前端提示"需重启生效"+ 显式重启按钮；文件 watcher 的外部编辑路径仍自动重启（CONFIG-SPEC §8），GUI 自写回声 2s 抑制 | 编辑期反复保存不应打断服务；把"何时生效"的决定权交给用户（SRS FR-2.10） |
 | D-11 | 交互终端 opt-in（`term_interactive` 默认关、仅 Pty）：输入按字节直传 PTY master，行编辑交给子进程行规程，窗口内提供只读/可写运行时开关 | 误输入风险默认关闭；不做本地行缓冲，保持与真实终端一致的最小实现（SRS FR-6.4/6.5）；窗口 resize 转发留二期 |
 | D-12 | 设置页标签页"每页独立保存"= 以整份配置快照合并提交（单次 upsert_service） | 后端无需按页拆分的保存 API；校验（FR-2.4）天然作用于整份配置，避免半成品配置落盘 |
 | D-14 | 前端 DTO 与 core 序列化形状**逐字段对齐、禁用 flatten**（`list_services` 的 brief.config 为嵌套对象） | serde flatten 对嵌套对象静默降级为默认值（曾导致列表无名、编辑空白且无任何报错），嵌套结构显式可查、编译期字段拼写即校验 |
+| D-15 | 托盘菜单、设置页列表、编辑页操作栏共用同一数据源与事件（`ServiceManager::list()` 快照 + `service-state-changed`） | 各自独立拉取/刷新曾导致设置页状态与托盘不一致；单一数据源 + 单一事件流保证三处一致（FR-1.10 / FR-2.11） |
+| D-16 | 日志大小以**带单位可读值**配置与展示（`10MB`/`512KB`/`1GB`，兼容纯字节），core 统一提供 parse/format，内存模型仍为字节 | 裸字节数（10485760）不可读易错；与 supervisord 的数值后缀习惯一致；解析/格式化收敛在 core 避免前端重复实现（FR-2.2） |
+| D-17 | PTY 终端视图按**会话**隔离：服务每次启动时 vte 栅格复位清屏，日志窗口/文件仍跨会话保留 | 终端 = "当下"（进度条、REPL 等重绘场景依赖干净栅格）；日志 = 历史（带时间戳可回溯）；两者语义分离（FR-6.6） |
 
 ---
 
@@ -278,7 +290,7 @@ traysupervisor/
 │       ├── main.rs / lib.rs
 │       ├── commands.rs       # IPC（前端）
 │       ├── ipc.rs            # 本地 IPC 服务（traysvctl 接入，§3.7）
-│       ├── tray.rs           # 菜单构建/防抖/平台开关
+│       ├── tray.rs           # 菜单构建/就地更新/平台开关
 │       └── bridge.rs         # core 事件 → Tauri emit
 ├── src/                      # Leptos 前端（Trunk 构建）
 │   ├── app.rs  pages/  components/

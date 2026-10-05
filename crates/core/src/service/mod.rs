@@ -1,26 +1,28 @@
 //! 服务管理器（HLD §3.2）：单写者应用配置变更（RD-4），每服务一个监督任务 + 一个日志 hub。
+//! 本文件为类型与装配；启停/查询 API 见 control.rs，配置重载见 reload.rs，日志 hub 见 hub.rs。
 
+pub mod control;
+pub mod hub;
 pub mod platform;
+pub mod reload;
+pub mod shellenv;
 pub mod supervisor;
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
 use tokio::sync::{mpsc, watch};
 
-use crate::config::{
-    diff_configs, effective_matchers, validate_app, AppConfig, ConfigDelta, GlobalSettings,
-    ServiceConfig,
-};
+use crate::config::{AppConfig, GlobalSettings, ServiceConfig};
 use crate::events::{
-    CoreEvent, EventBus, LogLine, MatchItem, StateInfo, StopReason, Stream, SvcState,
+    CoreEvent, EventBus, MatchItem, StateInfo, StopReason, Stream, SvcState,
 };
 use crate::log::LogStore;
 use crate::matcher::MatcherState;
-use crate::term::{TermHandle, TermScreen};
+use crate::term::TermHandle;
 
 /// 监督任务控制命令
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +105,9 @@ impl ServiceManager {
     ///
     /// 必须在非 async 上下文调用（内部创建独立 runtime）。
     pub fn new(config: AppConfig, config_path: PathBuf) -> Result<Arc<Self>, String> {
+        // 后台预热登录 shell PATH 缓存（GUI 宿主 PATH 精简兜底，shellenv 模块）
+        shellenv::warm();
+
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("traysv-core")
@@ -145,7 +150,7 @@ impl ServiceManager {
         Ok(mgr)
     }
 
-    pub fn config_path(&self) -> &Path {
+    pub fn config_path(&self) -> &std::path::Path {
         &self.config_path
     }
 
@@ -165,8 +170,7 @@ impl ServiceManager {
             },
             None => Arc::new(LogStore::new(cap, None).expect("纯内存 LogStore 不会失败")),
         };
-        let matcher =
-            Arc::new(Mutex::new(MatcherState::new(&effective_matchers(cfg))));
+        let matcher = Arc::new(Mutex::new(MatcherState::new(&cfg.matchers)));
         let term = Arc::new(TermHandle::new(80, 24));
         let (hub_tx, hub_rx) = mpsc::unbounded_channel();
         let got_output = Arc::new(AtomicBool::new(false));
@@ -183,7 +187,7 @@ impl ServiceManager {
         // 日志 hub：批量广播（≤80ms / 64 行），喂 store + matcher
         let hub_id = cfg.id.clone();
         let bus = shared.bus.clone();
-        handle.spawn(hub_task(
+        handle.spawn(hub::hub_task(
             hub_id,
             hub_rx,
             store.clone(),
@@ -236,341 +240,5 @@ impl ServiceManager {
             SupHandle { cmd_tx, cfg_tx, state_rx },
         );
         shared.ctxs.write().unwrap().insert(cfg.id.clone(), ctx);
-    }
-
-    pub fn list(&self) -> Vec<ServiceBrief> {
-        let configs = self.shared.configs.read().unwrap().clone();
-        configs
-            .iter()
-            .map(|cfg| {
-                let sup = self.shared.sups.read().unwrap().get(&cfg.id).cloned();
-                let (state, pid, exit_code, reason, since_ms) = match sup {
-                    Some(s) => {
-                        let i = s.state_rx.borrow().clone();
-                        (i.state, i.pid, i.exit_code, i.reason, i.since_ms)
-                    }
-                    None => (SvcState::Stopped, None, None, None, 0),
-                };
-                let match_items = self.match_items(&cfg.id);
-                ServiceBrief {
-                    config: cfg.clone(),
-                    state,
-                    pid,
-                    exit_code,
-                    reason,
-                    since_ms,
-                    match_items,
-                }
-            })
-            .collect()
-    }
-
-    fn send_cmd(&self, id: &str, cmd: SvcCmd) -> Result<(), String> {
-        let sups = self.shared.sups.read().unwrap();
-        let sup = sups.get(id).ok_or_else(|| format!("服务 {id} 不存在"))?;
-        sup.cmd_tx
-            .send(cmd)
-            .map_err(|_| format!("服务 {id} 的监督任务已退出"))?;
-        Ok(())
-    }
-
-    fn state_of(&self, id: &str) -> Option<SvcState> {
-        let sups = self.shared.sups.read().unwrap();
-        sups.get(id).map(|s| s.state_rx.borrow().state)
-    }
-
-    pub fn start(&self, id: &str) -> Result<(), String> {
-        match self.state_of(id) {
-            None => Err(format!("服务 {id} 不存在")),
-            Some(st) if matches!(st, SvcState::Stopped | SvcState::Exited | SvcState::Fatal | SvcState::Backoff) => {
-                self.send_cmd(id, SvcCmd::Start)
-            }
-            Some(st) => Err(format!("服务 {id} 当前为 {}，无需启动", st.as_str())),
-        }
-    }
-
-    pub fn stop(&self, id: &str) -> Result<(), String> {
-        match self.state_of(id) {
-            None => Err(format!("服务 {id} 不存在")),
-            Some(st) if matches!(st, SvcState::Starting | SvcState::Running | SvcState::Stopping | SvcState::Backoff) => {
-                self.send_cmd(id, SvcCmd::Stop)
-            }
-            Some(st) => Err(format!("服务 {id} 当前为 {}，无需停止", st.as_str())),
-        }
-    }
-
-    pub fn restart(&self, id: &str) -> Result<(), String> {
-        match self.state_of(id) {
-            None => Err(format!("服务 {id} 不存在")),
-            Some(SvcState::Stopping) => Err(format!("服务 {id} 正在停止，请稍后重试")),
-            Some(_) => self.send_cmd(id, SvcCmd::Restart),
-        }
-    }
-
-    pub fn get_log(&self, id: &str, since: u64, limit: usize) -> Option<Vec<LogLine>> {
-        let ctxs = self.shared.ctxs.read().unwrap();
-        ctxs.get(id).map(|c| c.store.snapshot(since, limit))
-    }
-
-    pub fn match_items(&self, id: &str) -> Vec<MatchItem> {
-        let ctxs = self.shared.ctxs.read().unwrap();
-        match ctxs.get(id) {
-            Some(c) => c.matcher.lock().unwrap().items(),
-            None => vec![],
-        }
-    }
-
-    /// 按哈希查找快捷项 URL（托盘 match:<id>:<hash> 事件路由，FR-1.7 / FR-5.6）
-    pub fn match_url(&self, id: &str, hash: u64) -> Option<String> {
-        let ctx = self.shared.ctxs.read().unwrap().get(id).cloned();
-        let Some(ctx) = ctx else { return None };
-        let items = ctx.matcher.lock().unwrap().items();
-        items.into_iter().find(|i| i.hash == hash).and_then(|i| i.url)
-    }
-
-    /// 只读终端快照（FR-6.2：视图只是输出订阅者，PTY master 由后端持有）
-    pub fn term_snapshot(&self, id: &str) -> Option<TermScreen> {
-        let ctx = self.shared.ctxs.read().unwrap().get(id).cloned();
-        let Some(ctx) = ctx else { return None };
-        Some(ctx.term.screen())
-    }
-
-    /// 转发输入至服务 PTY master（SRS FR-6.4）。
-    /// 仅 `term_interactive` + Pty 模式且进程运行中可用；Pipe 模式 stdin 已关闭。
-    pub fn write_stdin(&self, id: &str, data: Vec<u8>) -> Result<(), String> {
-        let ctx = self
-            .shared
-            .ctxs
-            .read()
-            .unwrap()
-            .get(id)
-            .cloned()
-            .ok_or_else(|| format!("服务 {id} 不存在或尚未加载"))?;
-        let mut guard = ctx.pty_writer.lock().unwrap();
-        match guard.as_mut() {
-            Some(w) => w
-                .write_all(&data)
-                .and_then(|_| w.flush())
-                .map_err(|e| format!("写入服务 {id} 的 stdin 失败：{e}")),
-            None => Err(format!(
-                "服务 {id} 未运行或非 PTY 模式，无法接收输入"
-            )),
-        }
-    }
-
-    /// 当前生效配置
-    pub fn current_config(&self) -> AppConfig {
-        AppConfig {
-            settings: self.shared.settings.read().unwrap().clone(),
-            services: self.shared.configs.read().unwrap().clone(),
-        }
-    }
-
-    /// reread / update：校验 → diff →（可选）串行应用（CONFIG-SPEC §8）
-    pub fn reload(&self, new: AppConfig, mode: ReloadMode) -> Result<ConfigDelta, Vec<String>> {
-        let errors = validate_app(&new);
-        if !errors.is_empty() {
-            return Err(errors);
-        }
-        let old = self.current_config();
-        let delta = diff_configs(&old.services, &new.services);
-        if mode == ReloadMode::Reread {
-            return Ok(delta);
-        }
-        self.apply_loaded(old, new, delta, true)
-    }
-
-    /// GUI 保存路径（SRS FR-2.10 / HLD D-10）：加载并应用新配置——
-    /// added/removed/soft 照常应用，changed 的运行中服务**只换配置、不自动重启**，
-    /// 重启由用户在"需重启生效"提示中显式触发。
-    pub fn apply_saved_config(&self) -> Result<ConfigDelta, Vec<String>> {
-        let new = crate::config::load_app_config(&self.config_path)
-            .map_err(|e| e.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect::<Vec<_>>())?;
-        let errors = validate_app(&new);
-        if !errors.is_empty() {
-            return Err(errors);
-        }
-        let old = self.current_config();
-        let delta = diff_configs(&old.services, &new.services);
-        self.apply_loaded(old, new, delta, false)
-    }
-
-    fn apply_loaded(
-        &self,
-        old: AppConfig,
-        new: AppConfig,
-        delta: ConfigDelta,
-        restart_changed: bool,
-    ) -> Result<ConfigDelta, Vec<String>> {
-        if delta.is_empty() {
-            return Ok(delta);
-        }
-
-        // settings 变更即时生效（环形缓冲容量）
-        if old.settings.log_lines != new.settings.log_lines {
-            let ctxs = self.shared.ctxs.read().unwrap();
-            for ctx in ctxs.values() {
-                ctx.store.set_cap(new.settings.log_lines as usize);
-            }
-        }
-        *self.shared.settings.write().unwrap() = new.settings.clone();
-        *self.shared.configs.write().unwrap() = new.services.clone();
-
-        let handle = self.rt.handle();
-        let old_map: HashMap<String, ServiceConfig> =
-            old.services.iter().map(|s| (s.id.clone(), s.clone())).collect();
-        let new_map: HashMap<String, ServiceConfig> =
-            new.services.iter().map(|s| (s.id.clone(), s.clone())).collect();
-
-        // removed：优雅停止后移出菜单（CONFIG-SPEC §8）
-        for id in &delta.removed {
-            if let Some(sup) = self.shared.sups.read().unwrap().get(id) {
-                let _ = sup.cmd_tx.send(SvcCmd::Shutdown);
-            }
-            self.shared.sups.write().unwrap().remove(id);
-            self.shared.ctxs.write().unwrap().remove(id);
-        }
-        // added：加入菜单，不自动启动
-        for id in &delta.added {
-            if let Some(cfg) = new_map.get(id) {
-                Self::create_service(&self.shared, handle, cfg);
-            }
-        }
-        // changed：仅 name/autostart 变更即时生效不重启（soft）；
-        // restart_changed=false（GUI 保存）时只换配置不重启（SRS FR-2.10）
-        for id in &delta.changed {
-            let Some(cfg) = new_map.get(id) else { continue };
-            let sups = self.shared.sups.read().unwrap();
-            if let Some(sup) = sups.get(id) {
-                let _ = sup.cfg_tx.send(cfg.clone());
-                // 日志文件策略与 Matcher 即时更新
-                if let Some(ctx) = self.shared.ctxs.read().unwrap().get(id) {
-                    let _ = ctx.store.replace_file(cfg.log.file.as_ref());
-                    if old_map.get(id).map(|o| o.matchers != cfg.matchers).unwrap_or(true) {
-                        ctx.matcher.lock().unwrap().replace(&effective_matchers(cfg));
-                    }
-                }
-                if restart_changed {
-                    let _ = sup.cmd_tx.send(SvcCmd::Restart);
-                }
-            }
-        }
-        for id in &delta.soft_changed {
-            if let Some(cfg) = new_map.get(id) {
-                if let Some(sup) = self.shared.sups.read().unwrap().get(id) {
-                    let _ = sup.cfg_tx.send(cfg.clone());
-                }
-            }
-        }
-
-        self.shared.bus.send(CoreEvent::ConfigChanged { delta: delta.clone() });
-        Ok(delta)
-    }
-
-    /// 从配置文件重新加载（热加载 watcher 与 GUI 保存共用）
-    pub fn reload_from_file(&self) -> Result<ConfigDelta, Vec<String>> {
-        match crate::config::load_app_config(&self.config_path) {
-            Ok(cfg) => self.reload(cfg, ReloadMode::Update),
-            Err(e) => Err(e.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()),
-        }
-    }
-
-    /// 热加载校验失败事件（watcher 调用，FR-2.6 提示）
-    pub fn publish_config_invalid(&self, errors: Vec<String>) {
-        self.shared.bus.send(CoreEvent::ConfigInvalid { errors });
-    }
-
-    /// 运行中服务数（托盘 tooltip：运行中 n / 共 m 个服务）
-    pub fn running_count(&self) -> usize {
-        let sups = self.shared.sups.read().unwrap();
-        sups.values().filter(|s| s.state_rx.borrow().state.is_alive()).count()
-    }
-
-    pub fn total_count(&self) -> usize {
-        self.shared.sups.read().unwrap().len()
-    }
-
-    /// 应用退出：对全部运行中服务执行停止流程并等待完成（FR-3.7）。
-    /// 阻塞直至全部停止（上限 = 最大 stop_timeout + 10s）。
-    pub fn shutdown_all(&self) {
-        {
-            let sups = self.shared.sups.read().unwrap();
-            for sup in sups.values() {
-                let _ = sup.cmd_tx.send(SvcCmd::Shutdown);
-            }
-            let max_timeout = self
-                .shared
-                .configs
-                .read()
-                .unwrap()
-                .iter()
-                .map(|s| s.stop_timeout_secs)
-                .max()
-                .unwrap_or(10);
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_secs(max_timeout + 10);
-            loop {
-                let alive = sups
-                    .values()
-                    .filter(|s| s.state_rx.borrow().state.is_alive())
-                    .count();
-                if alive == 0 || std::time::Instant::now() >= deadline {
-                    if alive > 0 {
-                        log::warn!("退出等待超时，仍有 {alive} 个服务未完全停止");
-                    }
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-        }
-    }
-}
-
-/// 日志 hub：行缓冲批量广播（HLD §3.3）
-async fn hub_task(
-    id: String,
-    mut rx: mpsc::UnboundedReceiver<HubMsg>,
-    store: Arc<LogStore>,
-    matcher: Arc<Mutex<MatcherState>>,
-    bus: EventBus,
-    got_output: Arc<AtomicBool>,
-) {
-    const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(80);
-    let mut batch: Vec<LogLine> = Vec::new();
-    let mut matcher_dirty = false;
-    let mut last_flush = std::time::Instant::now();
-
-    loop {
-        let flush_due = !batch.is_empty() && last_flush.elapsed() >= FLUSH_INTERVAL;
-        tokio::select! {
-            msg = rx.recv() => {
-                match msg {
-                    None => break,
-                    Some(HubMsg::Line(stream, text)) => {
-                        got_output.store(true, Ordering::Relaxed);
-                        let line = store.push(stream, &text);
-                        matcher_dirty |= matcher.lock().unwrap().feed_line(&text);
-                        batch.push(line);
-                    }
-                    Some(HubMsg::System(text)) => {
-                        let line = store.push(Stream::Out, &text);
-                        batch.push(line);
-                    }
-                }
-            }
-            _ = tokio::time::sleep(FLUSH_INTERVAL), if flush_due => {}
-        }
-        if !batch.is_empty() && (batch.len() >= 64 || last_flush.elapsed() >= FLUSH_INTERVAL) {
-            bus.send(CoreEvent::LogAppended { id: id.clone(), lines: std::mem::take(&mut batch) });
-            if matcher_dirty {
-                matcher_dirty = false;
-                let items = matcher.lock().unwrap().items();
-                bus.send(CoreEvent::MatcherHit { svc_id: id.clone(), items });
-            }
-            last_flush = std::time::Instant::now();
-        }
-    }
-    if !batch.is_empty() {
-        bus.send(CoreEvent::LogAppended { id, lines: batch });
     }
 }

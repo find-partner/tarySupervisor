@@ -2,8 +2,8 @@
 
 | 项目 | 内容 |
 |------|------|
-| 版本 | v0.2（草案，与 SRS/HLD 同步） |
-| 日期 | 2026-10-03 |
+| 版本 | v0.3（草案，与 SRS/HLD 同步） |
+| 日期 | 2026-10-05 |
 | 依据 | [SRS](./SRS.md) FR-2 / FR-3 / FR-4 / FR-5，[HLD](./HLD.md) §3.1 |
 | 状态 | 概要设计定稿前配套规范 |
 
@@ -35,7 +35,7 @@
 
 | 键 | 类型 | 默认 | 说明 | supervisord 对照 | 对应需求 |
 |----|------|------|------|------------------|---------|
-| command | string | 必填 | **完整命令行（程序 + 参数）单行**，按 §3.4 的 shlex 风格规则切分为"程序 + 参数数组"，**不经 shell**（FR-3.6） | `command` | FR-2.1 |
+| command | string | 必填 | **完整命令行（程序 + 参数）单行**，按 §3.4 的 shlex 风格规则切分为"程序 + 参数数组"，**不经 shell**（FR-3.6；例外：`shell=true`，见 §3.5） | `command` | FR-2.1 |
 | directory | 路径 | 用户目录 | 工作目录，支持 `~` 前缀展开 | `directory` | FR-2.1 |
 | autostart | bool | false | 应用启动时自动启动 | `autostart` | FR-2.1 |
 | autorestart | enum | no | `no` / `on-failure` / `always`；on-failure = 退出码 ≠ 0 或被信号/强杀终止 | 语义同 `false` / `unexpected` / `true`，枚举值采用更直读的别名 | FR-2.1 |
@@ -45,7 +45,7 @@
 | environment | 有序 KV 列表 | 空 | `KEY="value"` 逗号分隔多对，**书写顺序即注入顺序**（条目间可引用），见 §4 | `environment` | FR-2.3 |
 | redirect_stderr | bool | false | true：stderr 并入 stdout 单流；false（默认）：两流分别捕获并以流标识区分 | `redirect_stderr`（supervisord 默认 true，本项目默认保留流标识） | FR-4.1 |
 | stdout_logfile | 路径 | 空 | 日志文件：stdout/stderr 写同一文件，行内带时间戳与流标识；空 = 仅内存。支持绝对路径或 `~` 前缀；相对路径相对配置文件所在目录 | `stdout_logfile` | FR-2.2 |
-| stdout_logfile_maxbytes | int（字节） | 10485760 | 单文件上限，0 = 不轮转 | `stdout_logfile_maxbytes` | FR-2.2 |
+| stdout_logfile_maxbytes | 大小字符串 | 10MB | 单文件上限，`0` = 不轮转；**推荐带单位**：`KB`/`MB`/`GB`（大小写不敏感，可省略 `B`，如 `512kb`、`10MB`、`1G`），兼容纯字节数（`10485760`）；保存回写为可读单位 | `stdout_logfile_maxbytes`（supervisord 同样支持数值后缀） | FR-2.2 |
 | stdout_logfile_backups | int | 3 | 轮转分块保留份数（`.1 .2 …` 后缀） | `stdout_logfile_backups` | FR-2.2 |
 
 ### 3.2 项目扩展字段（supervisord 无）
@@ -55,6 +55,7 @@
 | name | string | = id | 菜单与 CLI 中的显示名 | FR-2.1 |
 | spawn_mode | enum | pipe | `pipe`（管道捕获）/ `pty`（伪终端捕获，启用只读终端视图 FR-6） | FR-2.1 / FR-6 |
 | term_interactive | bool | false | 终端视图**可写（交互）**：键盘/粘贴输入转发至服务 stdin；仅 `spawn_mode=pty` 有效，否则校验错误 | FR-6.4 |
+| shell | bool | false | true：经用户登录 shell（`$SHELL -ilc`）启动，继承其配置环境（PATH、nvm 等）；见 §3.5 | FR-2.1 |
 | logfile_compress | bool | false | 轮转出的旧分块 gzip 压缩 | FR-2.2 |
 | matcher.N.pattern | regex | — | 第 N 条 Matcher 正则（Rust regex 语法），N 从 1 连续递增，顺序即匹配顺序 | FR-5.1 |
 | matcher.N.template | string | `🌐 打开 {0}` | 快捷项文案，`{0} {1}` 引用捕获组 | FR-5.1 |
@@ -77,6 +78,16 @@
 2. 双引号包裹的部分整体为一个 token，内部空白不切分；
 3. `\` 仅在其后紧跟 `"`、`\` 或空白时作为转义符，**其余情况字面保留**——因此 Windows 路径 `C:\Users\me\app.exe` 无需引号即可使用（这是与 Python `shlex` POSIX 模式的刻意差异，见 §9）；
 4. 切分结果第一个 token 为程序（可执行文件路径或 PATH 可解析名），其余为参数数组（FR-3.6：直接传给目标程序，不经 shell）。
+
+### 3.5 shell 启动模式与 PATH 兜底
+
+GUI 应用从 Finder/启动台（launchd）拉起时只继承精简 PATH（`/usr/bin:/bin:/usr/sbin:/sbin`），用户在 `.zshrc`/`.bashrc` 里追加的 Homebrew / nvm 等路径全部缺失，`#!/usr/bin/env node` 类解释器查找会以 `env: node: No such file or directory`（exit 127）失败。两项机制解决该问题：
+
+**PATH 兜底注入（默认生效，无需配置）**：spawn 时若服务 `environment` 未显式配置 `PATH`，运行时以 `$SHELL -ilc 'printf %s "$PATH"'`（交互+登录，等价终端环境；结果进程内缓存，5s 超时）取回 PATH 注入子进程环境；探测失败时回退静态目录（`/opt/homebrew/bin` 等常见位置）拼接到继承 PATH 之前。服务显式配置 `environment=PATH=...` 时以配置为准；env「预览」展示与实际注入一致。Windows 桌面进程本就从注册表获得完整 PATH，不做注入。
+
+**`shell=true` 启动模式（按服务显式开启）**：目标命令经用户登录 shell 启动（Unix：`$SHELL -ilc '<命令行>'`；Windows：`%COMSPEC% /d /s /c "<命令行>"`）。命令行按 token 以 POSIX 单引号规则（Unix）/ MSVCRT 规则（Windows）重组，**shell 解析出的 argv 与直接 exec 完全一致**——shell 的作用是继承其配置环境（PATH、nvm、别名外的变量导出等），**不支持**管道、`&&` 等 shell 语法（token 会被当作普通参数，需要时请改用包装脚本）。`shell=true` 属于 changed 判定字段（§8），修改后需重启生效。
+
+**兼容性声明（DEV-CONVENTIONS §1）**：`shell` 为可选键、缺省 false——旧配置文件（无 `shell` 键）在当前版本解析不受影响；含 `shell=true` 的配置文件在旧版本应用上会因「未知键」被拒绝，不做兼容。
 
 ## 4. environment 与变量替换
 
@@ -102,6 +113,7 @@ matcher.2.template=端口 {0}
 ```
 
 - N 必须**从 1 开始连续递增**，顺序即匹配顺序；跳号视为校验错误。
+- 节内无任何 `matcher.N.*` 键即视为**无规则**：运行期不会隐式启用任何内置规则（FR-5.3 的内置 URL 规则仅由新建服务向导预填落盘）。
 - 每服务 Matcher 条数上限 20；`max_items` ≤ 10（FR-5.4）。
 - 正则在保存/加载时编译校验（FR-2.4 / FR-5.5）。
 
@@ -124,7 +136,7 @@ autorestart=on-failure
 startsecs=3
 stopwaitsecs=10
 stdout_logfile=~/.traysupervisor/logs/dev-docs.log
-stdout_logfile_maxbytes=10485760
+stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=3
 logfile_compress=true
 matcher.1.pattern=https?://\S+
@@ -147,7 +159,7 @@ redirect_stderr=false
 
 1. 节名：仅允许 `[traysupervisor]` 与 `[program:<id>]`；id 合法（slug）且全文件唯一；
 2. `command` 非空，且可按 §3.4 规则切分出程序名；
-3. 数值范围：`startsecs ≥ 0`、`stopwaitsecs ≥ 1`、`startretries 0–10`、`stdout_logfile_backups 0–100`、`stdout_logfile_maxbytes 0–1GB`、`log_lines 100–100000`、`max_items ≤ 10`、Matcher 条数 ≤ 20；
+3. 数值范围：`startsecs ≥ 0`、`stopwaitsecs ≥ 1`、`startretries 0–10`、`stdout_logfile_backups 0–100`、`stdout_logfile_maxbytes 0–1GB`（支持 `KB/MB/GB` 单位后缀或纯字节数；非法单位、非数字或溢出报错）、`log_lines 100–100000`、`max_items ≤ 10`、Matcher 条数 ≤ 20；
 4. Matcher 正则可编译；`matcher.N` 编号连续；
 5. environment 值必须 UTF-8；开启替换的值中 `${VAR}` 引用可解析（本表顺序 + 系统环境）且无环；
 6. 枚举值合法（`autorestart`、`spawn_mode`、bool 取 `true`/`false`）；
@@ -160,7 +172,7 @@ redirect_stderr=false
 - **校验失败**：丢弃本次变更（沿用上一次有效配置），托盘通知 + 设置窗口横幅提示错误明细。
 - **added**：新服务出现在菜单；不因热载自动启动（`autostart` 仅指应用启动时），需手动或 CLI 启动。
 - **removed**：运行中的服务按 FR-3.3 流程优雅停止后移出菜单。
-- **changed**：判定字段 = `command` / `directory` / `environment` / `spawn_mode` / `autorestart` / `startsecs` / `stopwaitsecs` / `stdout_logfile*` / `logfile_compress` / `matcher.*` → 命中则重启该服务使配置生效；仅 `name` / `autostart` 变更即时生效、不重启。未受影响的服务一律不重启。
+- **changed**：判定字段 = `command` / `directory` / `environment` / `spawn_mode` / `shell` / `autorestart` / `startsecs` / `stopwaitsecs` / `stdout_logfile*` / `logfile_compress` / `matcher.*` → 命中则重启该服务使配置生效；仅 `name` / `autostart` 变更即时生效、不重启。未受影响的服务一律不重启。
 - CLI 侧提供手动 `reread`（查看差异）与 `update`（应用差异），语义同上（见 [CLI-SPEC](./CLI-SPEC.md)）。
 
 ## 9. 与原 TOML 草案（HLD v0.1 §3.1）的差异与迁移

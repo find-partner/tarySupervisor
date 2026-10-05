@@ -25,6 +25,13 @@ pub fn join_command_line(prog: &str, args: &[String]) -> String {
     parts.join(" ")
 }
 
+/// POSIX shell 单引号转义（`shell=true` 模式重组命令行用）。
+/// 单引号内无任何转义语义，闭合再接 `'\\''` 即可表达字面单引号，
+/// 保证 shell 解析出的 argv 与直接 exec 完全一致。
+pub fn shell_quote_posix(tok: &str) -> String {
+    format!("'{}'", tok.replace('\'', r"'\''"))
+}
+
 fn tokenize(s: &str) -> Result<Vec<String>, String> {
     let chars: Vec<char> = s.chars().collect();
     let mut tokens = Vec::new();
@@ -167,6 +174,16 @@ mod tests {
         let (p2, a2) = split_command_line(&line).unwrap();
         assert_eq!(p2, prog, "line = {line:?}");
         assert_eq!(a2, args, "line = {line:?}");
+    }
+
+    #[test]
+    fn shell_quote_posix_escapes_exactly() {
+        // 空串、空格、单引号（'\'' 闭合转义）、双引号与反斜杠（单引号内字面保留）
+        assert_eq!(shell_quote_posix(""), "''");
+        assert_eq!(shell_quote_posix("a b"), "'a b'");
+        assert_eq!(shell_quote_posix("it's"), r"'it'\''s'");
+        assert_eq!(shell_quote_posix(r#"say "hi""#), r#"'say "hi"'"#);
+        assert_eq!(shell_quote_posix(r"C:\path\"), r"'C:\path\'");
     }
 
     #[test]

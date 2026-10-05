@@ -12,6 +12,18 @@ use regex::Regex;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+/// 生成快捷项 hash（去重键 + 托盘菜单 ID 编码）。
+/// 截断到 53 bit：跨 IPC 的整数必须是 JS 安全整数（DEV-CONVENTIONS §2），
+/// 完整 u64 会让前端 serde-wasm-bindgen 报 floating point 反序列化错。
+/// 截断仅影响碰撞概率（≤10 项/服务，2^53 下约 5e-15），hash 不落盘、可随版本变化。
+fn short_hash(idx: usize, label: &str, url: &Option<String>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    idx.hash(&mut hasher);
+    label.hash(&mut hasher);
+    url.hash(&mut hasher);
+    hasher.finish() & ((1 << 53) - 1)
+}
+
 /// 已编译 Matcher（含 LRU 快捷项集合）
 pub struct MatcherState {
     matchers: Vec<CompiledMatcher>,
@@ -31,20 +43,10 @@ struct CompiledMatcher {
 }
 
 impl MatcherState {
-    /// 从配置构建；空配置时启用内置 HTTP URL 规则（FR-5.3）。
+    /// 从配置构建；空配置 = 无任何匹配规则（内置 URL 规则不再隐式启用，
+    /// 由新建服务时的 UI 预填，FR-5.3）。
     /// （保存/加载时已校验可编译，这里对失败容忍：跳过并记日志）
     pub fn new(cfgs: &[MatcherConfig]) -> Self {
-        let builtin;
-        let cfgs: &[MatcherConfig] = if cfgs.is_empty() {
-            builtin = vec![MatcherConfig {
-                pattern: crate::config::BUILTIN_URL_PATTERN.to_string(),
-                template: crate::config::BUILTIN_URL_TEMPLATE.to_string(),
-                max_items: 5,
-            }];
-            &builtin
-        } else {
-            cfgs
-        };
         let mut matchers = Vec::new();
         for c in cfgs {
             match Regex::new(&c.pattern) {
@@ -63,19 +65,9 @@ impl MatcherState {
         Self { matchers, items: Vec::new() }
     }
 
-    /// 空配置时启用内置 HTTP URL 规则（FR-5.3）
-    pub fn builtin_url() -> Self {
-        Self::new(&crate::config::effective_matchers(&crate::config::ServiceConfig::default()))
-    }
-
     /// 配置热更后整体替换规则（旧快捷项一并清空）
     pub fn replace(&mut self, cfgs: &[MatcherConfig]) {
         *self = Self::new(cfgs);
-    }
-
-    pub fn is_builtin(&self) -> bool {
-        self.matchers.len() == 1
-            && self.matchers[0].regex.as_str() == crate::config::BUILTIN_URL_PATTERN
     }
 
     /// 对一行日志执行全部 matcher；返回本次是否产生变化。
@@ -94,11 +86,7 @@ impl MatcherState {
                     .map(|g| trim_url(g))
                     .find(|g| g.starts_with("http://") || g.starts_with("https://"));
 
-                let mut hasher = DefaultHasher::new();
-                idx.hash(&mut hasher);
-                label.hash(&mut hasher);
-                url.hash(&mut hasher);
-                let hash = hasher.finish();
+                let hash = short_hash(idx, &label, &url);
 
                 // 去重：已存在 → 触碰（移到队首）
                 if let Some(pos) = self.items.iter().position(|i| i.inner.hash == hash) {
@@ -200,9 +188,26 @@ mod tests {
         MatcherConfig { pattern: pattern.into(), template: template.into(), max_items }
     }
 
+    /// 内置 URL 规则（FR-5.3）：新建服务时由 UI 预填，测试里显式传入。
+    fn url_matcher_state() -> MatcherState {
+        MatcherState::new(&[m(
+            crate::config::BUILTIN_URL_PATTERN,
+            crate::config::BUILTIN_URL_TEMPLATE,
+            5,
+        )])
+    }
+
+    #[test]
+    fn empty_rules_match_nothing() {
+        // 无规则即无快捷项；内置 URL 规则不再隐式启用（FR-5.3 语义修正）
+        let mut st = MatcherState::new(&[]);
+        assert!(!st.feed_line("Serving at http://127.0.0.1:8000 "));
+        assert!(st.items().is_empty());
+    }
+
     #[test]
     fn builtin_url_hit() {
-        let mut st = MatcherState::new(&[]);
+        let mut st = url_matcher_state();
         assert!(st.feed_line("Serving at http://127.0.0.1:8000 "));
         let items = st.items();
         assert_eq!(items.len(), 1);
@@ -212,13 +217,22 @@ mod tests {
 
     #[test]
     fn dedupes_by_result_hash() {
-        let mut st = MatcherState::new(&[]);
+        let mut st = url_matcher_state();
         st.feed_line("go http://a.example");
         st.feed_line("go http://a.example again");
         st.feed_line("go http://a.example");
         assert_eq!(st.items().len(), 1);
         st.feed_line("go http://b.example");
         assert_eq!(st.items().len(), 2);
+    }
+
+    #[test]
+    fn hash_stays_within_js_safe_integer() {
+        // DEV-CONVENTIONS §2：跨 IPC 整数 ≤ 2^53-1，否则前端反序列化失败
+        for i in 0..1000usize {
+            let h = short_hash(i, &format!("label {i}"), &Some(format!("http://x/{i}")));
+            assert!(h < (1u64 << 53), "hash {h} 超出 JS 安全整数范围");
+        }
     }
 
     #[test]
@@ -246,7 +260,7 @@ mod tests {
 
     #[test]
     fn clear_on_restart() {
-        let mut st = MatcherState::new(&[]);
+        let mut st = url_matcher_state();
         st.feed_line("http://x");
         assert!(!st.items().is_empty());
         st.clear();
@@ -255,7 +269,7 @@ mod tests {
 
     #[test]
     fn url_trailing_punctuation_trimmed() {
-        let mut st = MatcherState::new(&[]);
+        let mut st = url_matcher_state();
         st.feed_line("see https://example.com/docs.");
         let url = st.items()[0].url.clone().unwrap();
         assert_eq!(url, "https://example.com/docs");

@@ -93,6 +93,14 @@
       .tabbar .tab:hover { background: #eef1f4; color: var(--fg); }
       .tabbar .tab.active { background: #fff; border-color: var(--line); color: var(--fg); font-weight: 600; }
 
+      /* ---------- 编辑页服务操作栏（FR-2.11） ---------- */
+      .ctrlbar {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        border: 1px solid var(--line); background: #f6f8fa; border-radius: 6px;
+        padding: 6px 10px; margin-bottom: 12px; max-width: 760px;
+      }
+      .ctrlbar .spacer { flex: 1; }
+
       /* ---------- 日志窗口 ---------- */
       .logwin { display: flex; flex-direction: column; height: 100%; }
       .logview {

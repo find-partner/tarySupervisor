@@ -64,6 +64,11 @@ fn js_str(v: &JsValue) -> String {
     v.as_string().unwrap_or_else(|| format!("{v:?}"))
 }
 
+// 注意：不要用 window.confirm 做确认框——dialog 插件（≥2.3）的 init 脚本把它
+// 劫持为调用 plugin:dialog|confirm，该命令在插件 2.8.1 的 Rust 侧已删除，Promise
+// 恒 reject（表现为"点了没反应"）；且其 api-iife 的 __TAURI__.dialog 注入时序
+// 不可靠。删除等确认操作使用应用内模态框（src/pages/settings/confirm.rs）。
+
 /// listen(event, cb) → 返回 unlisten 函数
 pub async fn listen<F: Fn(JsValue) + 'static>(
     event: &str,

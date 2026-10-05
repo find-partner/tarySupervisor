@@ -9,12 +9,12 @@ mod envstr;
 mod ini;
 mod validate;
 
-pub use cmdline::{join_command_line, split_command_line};
+pub use cmdline::{join_command_line, shell_quote_posix, split_command_line};
 pub use envstr::{expand_env_value, parse_environment, resolve_env, serialize_environment};
 pub use ini::{ensure_default_config, load_app_config, save_app_config};
 pub use validate::{
-    effective_matchers, system_var, validate_app, BACKUPS_MAX, LOG_LINES_MAX, LOG_LINES_MIN,
-    MATCHER_MAX_ITEMS_MAX, MATCHERS_MAX, MAX_BYTES_MAX, START_RETRIES_MAX,
+    system_var, validate_app, BACKUPS_MAX, LOG_LINES_MAX, LOG_LINES_MIN, MATCHER_MAX_ITEMS_MAX,
+    MATCHERS_MAX, MAX_BYTES_MAX, START_RETRIES_MAX,
 };
 
 use serde::{Deserialize, Serialize};
@@ -73,11 +73,16 @@ pub struct ServiceConfig {
     pub stop_timeout_secs: u64,
     /// 捕获方式（默认 Pipe）
     pub spawn_mode: SpawnMode,
+    /// true：经用户登录 shell（`$SHELL -ilc`）启动，继承其配置环境
+    /// （.zshrc/.bashrc 里的 PATH、nvm 等）；FR-3.6 的显式例外，见 CONFIG-SPEC §3.5
+    #[serde(default)]
+    pub shell: bool,
     /// 终端视图可写（交互，默认 false；仅 Pty 模式有效，SRS FR-6.4）
     pub term_interactive: bool,
     /// 日志文件策略；None = 仅内存
     pub log: LogPolicy,
-    /// Matcher 规则（≤20 条）；空时启用内置 HTTP URL Matcher（FR-5.3）
+    /// Matcher 规则（≤20 条）；空 = 无规则（内置 URL 规则不再隐式启用，FR-5.3：
+    /// 仅在新建服务时由 UI 预填并随配置落盘）
     pub matchers: Vec<MatcherConfig>,
 }
 
@@ -97,6 +102,7 @@ impl Default for ServiceConfig {
             startretries: 5,
             stop_timeout_secs: 10,
             spawn_mode: SpawnMode::Pipe,
+            shell: false,
             term_interactive: false,
             log: LogPolicy::default(),
             matchers: vec![],
@@ -203,9 +209,96 @@ impl Default for MatcherConfig {
     }
 }
 
-/// 内置默认 Matcher 模板（FR-5.3）
+/// 内置 URL Matcher 预设（FR-5.3）：新建服务时由 UI 预填，运行期不隐式启用
 pub const BUILTIN_URL_PATTERN: &str = r"https?://[^\s]+";
 pub const BUILTIN_URL_TEMPLATE: &str = "🌐 打开 {0}";
+
+/// 解析带单位的字节大小（FR-2.2 / CONFIG-SPEC §3.1）：
+/// `10MB`、`512kb`、`1G`、`0`、`10485760` 均可；单位大小写不敏感，`B` 可省略。
+/// 返回字节数（内存模型始终为字节，HLD D-16）。
+pub fn parse_byte_size(s: &str) -> Result<u64, String> {
+    let t = s.trim();
+    let digits_end = t
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(t.len());
+    let (num, unit) = t.split_at(digits_end);
+    if num.is_empty() {
+        return Err(format!("大小 {s:?} 缺少数字（示例：10MB、512KB、0）"));
+    }
+    let mult: u64 = match unit.trim().to_ascii_uppercase().as_str() {
+        "" | "B" => 1,
+        "K" | "KB" => 1024,
+        "M" | "MB" => 1024 * 1024,
+        "G" | "GB" => 1024 * 1024 * 1024,
+        other => {
+            return Err(format!(
+                "大小 {s:?} 的单位 {other:?} 非法（支持 B/KB/MB/GB 或纯字节数）"
+            ))
+        }
+    };
+    let n: u64 = num
+        .parse()
+        .map_err(|_| format!("大小 {s:?} 的数字部分 {num:?} 非法"))?;
+    n.checked_mul(mult).ok_or_else(|| format!("大小 {s:?} 超出 64 位范围"))
+}
+
+/// 字节数 → 可读大小字符串（parse_byte_size 的逆操作，用于 INI 回写与 GUI 展示）：
+/// 能被 GB/MB/KB 整除时用最大单位，否则输出字节数。
+pub fn format_byte_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if bytes == 0 {
+        "0".to_string()
+    } else if bytes.is_multiple_of(GB) {
+        format!("{}GB", bytes / GB)
+    } else if bytes.is_multiple_of(MB) {
+        format!("{}MB", bytes / MB)
+    } else if bytes.is_multiple_of(KB) {
+        format!("{}KB", bytes / KB)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_byte_size_units() {
+        assert_eq!(parse_byte_size("10MB").unwrap(), 10_485_760);
+        assert_eq!(parse_byte_size("512kb").unwrap(), 512 * 1024);
+        assert_eq!(parse_byte_size("1G").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_byte_size("2 GB").unwrap(), 2 * 1024 * 1024 * 1024);
+        assert_eq!(parse_byte_size("10485760").unwrap(), 10_485_760);
+        assert_eq!(parse_byte_size("0").unwrap(), 0);
+        assert_eq!(parse_byte_size(" 10MB ").unwrap(), 10_485_760);
+        assert_eq!(parse_byte_size("4096B").unwrap(), 4096);
+    }
+
+    #[test]
+    fn parse_byte_size_rejects_garbage() {
+        assert!(parse_byte_size("").is_err());
+        assert!(parse_byte_size("MB").is_err());
+        assert!(parse_byte_size("10TB").is_err());
+        assert!(parse_byte_size("10 MB extra").is_err());
+        assert!(parse_byte_size("abc").is_err());
+        assert!(parse_byte_size("-5MB").is_err());
+    }
+
+    #[test]
+    fn format_byte_size_roundtrip() {
+        assert_eq!(format_byte_size(10_485_760), "10MB");
+        assert_eq!(format_byte_size(512 * 1024), "512KB");
+        assert_eq!(format_byte_size(1024 * 1024 * 1024), "1GB");
+        assert_eq!(format_byte_size(0), "0");
+        assert_eq!(format_byte_size(12345), "12345B");
+        for v in [0u64, 1, 4096, 12345, 512 * 1024, 10_485_760, 1024u64.pow(3)] {
+            assert_eq!(parse_byte_size(&format_byte_size(v)).unwrap(), v);
+        }
+    }
+}
 
 /// 配置差异（热加载 / reread-update 语义，CONFIG-SPEC §8）
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -263,6 +356,7 @@ pub fn diff_configs(old: &[ServiceConfig], new: &[ServiceConfig]) -> ConfigDelta
                 || o.startretries != s.startretries
                 || o.stop_timeout_secs != s.stop_timeout_secs
                 || o.spawn_mode != s.spawn_mode
+                || o.shell != s.shell
                 || o.log != s.log
                 || o.matchers != s.matchers;
             if hard {

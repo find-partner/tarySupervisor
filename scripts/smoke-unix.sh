@@ -79,7 +79,7 @@ command=/usr/bin/seq 1 200000
 autostart=true
 startsecs=0
 stdout_logfile=$CFG_DIR/smoke-rotate.log
-stdout_logfile_maxbytes=100000
+stdout_logfile_maxbytes=100KB
 stdout_logfile_backups=3
 EOF
 APP_PID=$(launch_app info)
@@ -130,7 +130,7 @@ else
   bad "config.ini 权限 = ${perm}（预期 600，实际由应用 ensure_default_config 创建）"
 fi
 
-echo "== S-05 菜单重建防抖合并（FR-1.6，RUST_LOG=debug 计数重建）"
+echo "== S-05 菜单就地更新（FR-1.6：状态扰动期零重建，RUST_LOG=debug 计数）"
 {
   echo '[traysupervisor]'
   echo 'log_lines=2000'
@@ -148,12 +148,13 @@ APP_PID=$(launch_app debug)
 sleep 6
 kill -TERM "$APP_PID" 2>/dev/null; wait "$APP_PID" 2>/dev/null || true
 REBUILDS=$(grep -c "托盘菜单已重建" "$APPLOG" || true)
+UPDATES=$(grep -c "托盘菜单项已就地更新" "$APPLOG" || true)
 # 5 个快速退出的 always 服务 6 秒内产生 ≈50+ 状态事件；
-# 300ms 防抖合并后重建应显著更少（≤20）
-if [ "${REBUILDS:-99}" -gt 0 ] && [ "${REBUILDS:-99}" -le 20 ]; then
-  ok "防抖合并生效：6s 内 50+ 状态事件 → $REBUILDS 次重建"
+# 就地更新（D-7）下不应发生任何全量重建，且状态更新须被处理
+if [ "${UPDATES:-0}" -ge 20 ] && [ "${REBUILDS:-99}" -eq 0 ]; then
+  ok "就地更新生效：6s 内 $UPDATES 次状态更新、0 次重建"
 else
-  bad "防抖合并异常：重建次数 = ${REBUILDS:-?}（预期 1~20）"
+  bad "菜单刷新异常：就地更新 ${UPDATES:-0} 次（预期 ≥20）、重建 ${REBUILDS:-?} 次（预期 0）"
 fi
 
 echo

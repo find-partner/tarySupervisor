@@ -32,12 +32,16 @@ pub struct ServiceInput {
     pub startretries: u32,
     pub stopwaitsecs: u64,
     pub spawn_mode: String,
+    /// 经用户登录 shell 启动（继承 .zshrc/.bashrc 环境，CONFIG-SPEC §3.5）
+    #[serde(default)]
+    pub shell: bool,
     /// 终端视图可写（交互，仅 Pty 有效，SRS FR-6.4）
     #[serde(default)]
     pub term_interactive: bool,
     pub log_file_enabled: bool,
     pub log_path: Option<String>,
-    pub log_max_bytes: u64,
+    /// 带单位大小（`10MB` / `512KB` / `1GB` 或纯字节，FR-2.2 / D-16）
+    pub log_max_bytes: String,
     pub log_max_files: u32,
     pub log_compress: bool,
     pub matchers: Vec<MatcherIn>,
@@ -91,6 +95,11 @@ fn build_service_config(input: &ServiceInput) -> Result<ServiceConfig, Vec<Strin
     if !errors.is_empty() {
         return Err(errors);
     }
+    // 日志单文件上限：带单位大小 → 字节（FR-2.2 / HLD D-16）
+    let max_bytes = match traysupervisor_core::config::parse_byte_size(&input.log_max_bytes) {
+        Ok(v) => v,
+        Err(e) => return Err(vec![format!("log_max_bytes：{e}")]),
+    };
     Ok(ServiceConfig {
         id: input.id.trim().to_string(),
         name: {
@@ -121,12 +130,22 @@ fn build_service_config(input: &ServiceInput) -> Result<ServiceConfig, Vec<Strin
         startretries: input.startretries,
         stop_timeout_secs: input.stopwaitsecs.max(1),
         spawn_mode: parse_spawn_mode(&input.spawn_mode),
+        shell: input.shell,
         term_interactive: input.term_interactive,
         log: LogPolicy {
             file: if input.log_file_enabled {
-                input.log_path.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(|p| LogFilePolicy {
-                    path: expand_tilde(p),
-                    max_bytes: input.log_max_bytes,
+                // 路径留空 → 以内置默认路径生成（SRS FR-2.2），不再静默降级为不启用；
+                // 「stdout_logfile 空 = 仅内存」仅属 INI 语义，GUI 勾选即启用
+                let path = input
+                    .log_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(expand_tilde)
+                    .unwrap_or_else(|| traysupervisor_core::default_log_path(input.id.trim()));
+                Some(LogFilePolicy {
+                    path,
+                    max_bytes,
                     max_files: input.log_max_files,
                     compress: input.log_compress,
                 })
@@ -156,6 +175,8 @@ pub struct ServiceBriefOut {
     pub brief: traysupervisor_core::ServiceBrief,
     /// 单行命令行（join §3.4 规则），编辑表单直接使用
     pub command_line: String,
+    /// 日志单文件上限的带单位展示值（如 `10MB`；未启用文件日志为空，FR-2.2 / D-16）
+    pub log_max_bytes_text: String,
 }
 
 #[tauri::command]
@@ -166,7 +187,14 @@ pub fn list_services(state: State<'_, AppState>) -> Vec<ServiceBriefOut> {
         .into_iter()
         .map(|b| {
             let command_line = join_command_line(&b.config.command, &b.config.args);
-            ServiceBriefOut { brief: b, command_line }
+            let log_max_bytes_text = b
+                .config
+                .log
+                .file
+                .as_ref()
+                .map(|f| traysupervisor_core::config::format_byte_size(f.max_bytes))
+                .unwrap_or_default();
+            ServiceBriefOut { brief: b, command_line, log_max_bytes_text }
         })
         .collect()
 }
@@ -250,14 +278,17 @@ pub fn open_match_url(
         .map_err(|e| format!("打开浏览器失败：{e}"))
 }
 
-/// env 展开预览（编辑页「预览」按钮）
+/// env 展开预览（编辑页「预览」按钮）；
+/// 与实际 spawn 环境一致：未显式配置 PATH 时展示运行时注入的兜底 PATH
 #[tauri::command]
 pub fn get_env_resolved_preview(
     input: ServiceInput,
 ) -> Result<BTreeMap<String, String>, String> {
     let svc = build_service_config(&input).map_err(|e| e.join("\n"))?;
-    traysupervisor_core::config::resolve_env(&svc.env, &system_var)
-        .map_err(|errs| errs.join("\n"))
+    let mut env = traysupervisor_core::config::resolve_env(&svc.env, &system_var)
+        .map_err(|errs| errs.join("\n"))?;
+    traysupervisor_core::service::shellenv::inject_fallback_path(&mut env);
+    Ok(env)
 }
 
 #[tauri::command]
@@ -309,4 +340,16 @@ pub fn open_log_dir(app: tauri::AppHandle, state: State<'_, AppState>, id: Strin
     app.opener()
         .open_path(dir.to_string_lossy().to_string(), None::<&str>)
         .map_err(|e| format!("打开目录失败：{e}"))
+}
+
+/// 打开（或聚焦）服务日志窗口（编辑页操作栏 FR-2.11 与托盘菜单共用入口）
+#[tauri::command]
+pub fn open_log_window(app: tauri::AppHandle, id: String) {
+    crate::wins::open_log(&app, &id);
+}
+
+/// 打开（或聚焦）服务终端视图窗口（编辑页操作栏 FR-2.11 与托盘菜单共用入口）
+#[tauri::command]
+pub fn open_term_window(app: tauri::AppHandle, id: String) {
+    crate::wins::open_term(&app, &id);
 }

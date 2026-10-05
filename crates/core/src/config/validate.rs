@@ -1,8 +1,6 @@
 //! 配置校验（CONFIG-SPEC §7 / SRS FR-2.4）：加载与保存均执行，错误逐项输出。
 
-use super::{
-    resolve_env, AppConfig, ServiceConfig, SpawnMode, BUILTIN_URL_PATTERN, BUILTIN_URL_TEMPLATE,
-};
+use super::{resolve_env, AppConfig, ServiceConfig, SpawnMode};
 use regex::Regex;
 use std::collections::HashSet;
 
@@ -79,7 +77,10 @@ pub fn validate_service(svc: &ServiceConfig) -> Vec<String> {
     }
     if let Some(f) = &svc.log.file {
         if f.max_bytes > MAX_BYTES_MAX {
-            errors.push(format!("{tag} stdout_logfile_maxbytes 最大 {} 字节", MAX_BYTES_MAX));
+            errors.push(format!(
+                "{tag} stdout_logfile_maxbytes 最大 {}（支持 KB/MB/GB 单位）",
+                super::format_byte_size(MAX_BYTES_MAX)
+            ));
         }
         if f.max_files > BACKUPS_MAX {
             errors.push(format!("{tag} stdout_logfile_backups 必须 0–{}", BACKUPS_MAX));
@@ -130,19 +131,6 @@ pub fn validate_service(svc: &ServiceConfig) -> Vec<String> {
     }
 
     errors
-}
-
-/// Matcher 空时启用内置 HTTP URL 规则（FR-5.3：无需配置即可出现「🌐 打开 …」）。
-pub fn effective_matchers(svc: &ServiceConfig) -> Vec<super::MatcherConfig> {
-    if svc.matchers.is_empty() {
-        vec![super::MatcherConfig {
-            pattern: BUILTIN_URL_PATTERN.to_string(),
-            template: BUILTIN_URL_TEMPLATE.to_string(),
-            max_items: 5,
-        }]
-    } else {
-        svc.matchers.clone()
-    }
 }
 
 #[cfg(test)]
@@ -210,13 +198,5 @@ mod tests {
         };
         let errs = validate_app(&cfg);
         assert!(errs.iter().any(|e| e.contains("id 重复")));
-    }
-
-    #[test]
-    fn builtin_url_matcher_applied_when_empty() {
-        let s = svc("a", "x");
-        let ms = effective_matchers(&s);
-        assert_eq!(ms.len(), 1);
-        assert_eq!(ms[0].pattern, BUILTIN_URL_PATTERN);
     }
 }

@@ -3,7 +3,9 @@
 
 use std::time::{Duration, Instant};
 
-use traysupervisor_core::config::{Autorestart, EnvEntry, ServiceConfig, SpawnMode};
+use traysupervisor_core::config::{
+    Autorestart, EnvEntry, MatcherConfig, ServiceConfig, SpawnMode,
+};
 use traysupervisor_core::events::SvcState;
 use traysupervisor_core::ServiceManager;
 
@@ -182,12 +184,15 @@ fn stdout_capture_and_env_expansion() {
 
 #[test]
 fn matcher_url_hit_via_real_output() {
+    // FR-5.3：内置 URL 规则不再隐式启用，此处显式配置（与新建服务 UI 预填等价）
+    let mut url_svc = svc("t-url", "/bin/echo", &["Serving at http://127.0.0.1:8000"]);
+    url_svc.matchers = vec![MatcherConfig {
+        pattern: traysupervisor_core::config::BUILTIN_URL_PATTERN.to_string(),
+        template: traysupervisor_core::config::BUILTIN_URL_TEMPLATE.to_string(),
+        max_items: 5,
+    }];
     let cfg = traysupervisor_core::config::AppConfig {
-        services: vec![svc(
-            "t-url",
-            "/bin/echo",
-            &["Serving at http://127.0.0.1:8000"],
-        )],
+        services: vec![url_svc],
         ..Default::default()
     };
     let dir = tempfile::tempdir().unwrap();
@@ -384,6 +389,39 @@ fn apply_saved_config_does_not_restart_running_service() {
             Duration::from_secs(5)
         ),
         "显式重启后 PID 应变化"
+    );
+    mgr.shutdown_all();
+}
+
+#[cfg(unix)]
+#[test]
+fn shell_mode_runs_via_login_shell_and_preserves_argv() {
+    // CONFIG-SPEC §3.5（FR-3.6 shell 例外）：shell=true 经 $SHELL -ilc 启动，
+    // argv 经 POSIX 单引号重组——含空格/单引号/双引号的参数必须原样到达目标程序
+    let cfg = traysupervisor_core::config::AppConfig {
+        services: vec![ServiceConfig {
+            shell: true,
+            ..svc("t-shell", "/bin/echo", &["a b", "it's", r#"q "x" q"#])
+        }],
+        ..Default::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = ServiceManager::new(cfg, dir.path().join("config.ini")).unwrap();
+    mgr.start("t-shell").unwrap();
+    assert!(wait_state(&mgr, "t-shell", SvcState::Exited, Duration::from_secs(30)));
+    let want = r#"a b it's q "x" q"#;
+    assert!(
+        wait_pred(
+            || {
+                mgr.get_log("t-shell", 0, 2000)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|l| l.text == want)
+            },
+            Duration::from_secs(10)
+        ),
+        "shell 模式未按原样重组 argv（期望行 {want:?}）：{:?}",
+        mgr.get_log("t-shell", 0, 2000)
     );
     mgr.shutdown_all();
 }

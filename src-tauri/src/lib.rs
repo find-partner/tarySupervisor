@@ -92,6 +92,8 @@ pub fn run() {
             commands::term_snapshot,
             commands::write_stdin,
             commands::open_log_dir,
+            commands::open_log_window,
+            commands::open_term_window,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri 构建失败")

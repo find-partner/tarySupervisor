@@ -155,6 +155,8 @@ pub(super) async fn supervise(d: SupervisorDeps, mut cmd_rx: mpsc::UnboundedRece
             d.got_output.store(false, Ordering::Relaxed);
             // 清空上一轮的 PTY 写端（未运行期间不可写，FR-6.4）
             *d.ctx.pty_writer.lock().unwrap() = None;
+            // 终端屏复位（FR-6.6 会话隔离）：PTY 只保留当前会话的输出
+            d.term.clear();
             set_state(&d, &mut info, SvcState::Starting, None, None, None);
 
             match spawn_service(&cfg, &resolve_env(&cfg), Some(&d.term), &d.hub_tx) {

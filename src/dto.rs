@@ -80,6 +80,9 @@ pub struct ServiceConfigDto {
     pub stop_timeout_secs: u64,
     #[serde(default)]
     pub spawn_mode: String,
+    /// 经用户登录 shell 启动（继承 .zshrc/.bashrc 环境，CONFIG-SPEC §3.5）
+    #[serde(default)]
+    pub shell: bool,
     /// 终端视图可写（交互，仅 Pty 有效，SRS FR-6.4）
     #[serde(default)]
     pub term_interactive: bool,
@@ -101,6 +104,7 @@ fn d10() -> u64 {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MatchItem {
+    /// JS 安全整数（≤ 2^53-1，core 生成时截断；见 docs/DEV-CONVENTIONS.md §2）
     pub hash: u64,
     pub label: String,
     pub url: Option<String>,
@@ -123,6 +127,9 @@ pub struct ServiceBriefOut {
     #[serde(default)]
     pub match_items: Vec<MatchItem>,
     pub command_line: String,
+    /// 日志单文件上限的带单位展示值（如 `10MB`；未启用文件日志为空，FR-2.2 / D-16）
+    #[serde(default)]
+    pub log_max_bytes_text: String,
 }
 
 impl ServiceBriefOut {
@@ -168,10 +175,12 @@ pub struct ServiceInput {
     pub startretries: u32,
     pub stopwaitsecs: u64,
     pub spawn_mode: String,
+    pub shell: bool,
     pub term_interactive: bool,
     pub log_file_enabled: bool,
     pub log_path: Option<String>,
-    pub log_max_bytes: u64,
+    /// 带单位大小（`10MB` / `512KB` / `1GB` 或纯字节；解析在后端，FR-2.2 / D-16）
+    pub log_max_bytes: String,
     pub log_max_files: u32,
     pub log_compress: bool,
     pub matchers: Vec<MatcherConfig>,
