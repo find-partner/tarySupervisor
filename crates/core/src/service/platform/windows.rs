@@ -3,14 +3,15 @@
 
 use std::io::Read;
 use std::os::windows::io::FromRawHandle;
+use std::sync::Arc;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::oneshot;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, SetHandleInformation, HANDLE_FLAG_INHERIT,
+    CloseHandle, GENERIC_READ, SetHandleInformation, HANDLE_FLAG_INHERIT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, GENERIC_READ, OPEN_EXISTING,
+    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
 use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, TerminateJobObject};
@@ -116,10 +117,10 @@ pub(super) fn spawn_pipe(
         ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
 
-        // 写端移交子进程：包装为 StdReader 后由读线程接管
-        let out_reader = Box::new(std::process::ChildStdout::from_raw_handle(out_rd))
+        // 写端移交子进程：管道读端包装为 File 后由读线程接管
+        let out_reader = Box::new(std::fs::File::from_raw_handle(out_rd))
             as Box<dyn Read + Send>;
-        let err_reader = Box::new(std::process::ChildStderr::from_raw_handle(err_rd))
+        let err_reader = Box::new(std::fs::File::from_raw_handle(err_rd))
             as Box<dyn Read + Send>;
         spawn_reader_thread(out_reader, crate::events::Stream::Out, false, hub_tx.clone());
         spawn_reader_thread(
@@ -135,28 +136,29 @@ pub(super) fn spawn_pipe(
         }
 
         // waiter：等待退出并取退出码；结束后关 hProcess 与 job（KILL_ON_JOB_CLOSE 兜底）
-        let h_process = pi.hProcess;
+        let h_process = winapi::SendHandle(pi.hProcess);
         std::thread::spawn(move || {
-            unsafe {
-                WaitForSingleObject(h_process, INFINITE);
+            let code = {
+                WaitForSingleObject(h_process.raw(), INFINITE);
                 let mut code: u32 = 0;
-                GetExitCodeProcess(h_process, &mut code);
-                CloseHandle(h_process);
-                drop(job_for_wait);
-            }
+                GetExitCodeProcess(h_process.raw(), &mut code);
+                CloseHandle(h_process.raw());
+                code
+            };
+            drop(job_for_wait);
             let _ = exit_tx.send(ExitInfo { code: Some(code as i32), signal: None });
         });
 
         // 优雅停止：CTRL_BREAK 尽力尝试；失败回退终止直接子进程（强杀树交给 Job）
-        let dup = winapi::duplicate(h_process)?;
+        let dup = winapi::SendHandle(winapi::duplicate(h_process.0)?);
         let job_kill = job_for_kill;
         let killer = Killer::new(
-            move || unsafe {
+            move || {
                 if GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) == 0 {
-                    winapi::terminate_process(dup);
+                    winapi::terminate_process(dup.raw());
                 }
             },
-            move || unsafe {
+            move || {
                 TerminateJobObject(job_kill.0, 1);
             },
         );
@@ -193,10 +195,13 @@ pub(super) fn spawn_pty(
     spawn_pty_reader_thread(Box::new(reader), term, hub_tx.clone());
 
     // ConPTY 下无可用优雅停止：kill（TerminateProcess）即时终止，树由 ConPTY 会话回收
-    let mut soft = child.clone_killer();
+    // portable-pty 的 killer 需要 &mut 调用，用 Mutex 适配 Killer 的 Fn 约束
+    let soft = std::sync::Mutex::new(child.clone_killer());
     let killer = Killer::new(
         move || {
-            let _ = soft.kill();
+            if let Ok(mut k) = soft.lock() {
+                let _ = k.kill();
+            }
         },
         move || {
             unsafe {

@@ -64,7 +64,8 @@ fn pipe_lifecycle_start_stop() {
 
     mgr.stop("t-sleep").unwrap();
     assert!(wait_state(&mgr, "t-sleep", SvcState::Stopped, Duration::from_secs(3)));
-    // FR-3.3：停止后进程应已回收（kill(pid,0) 报 ESRCH）
+    // FR-3.3：停止后进程应已回收（kill(pid,0) 报 ESRCH；Windows 由真机冒烟覆盖，SYSTEM-TEST §4）
+    #[cfg(unix)]
     if let Some(pid) = pid {
         let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
         assert!(!alive, "停止后进程 {pid} 仍存活");
@@ -105,7 +106,8 @@ fn autorestart_always_restarts_after_kill9() {
     assert!(wait_state(&mgr, "t-restart", SvcState::Running, Duration::from_secs(3)));
     let pid1 = mgr.list()[0].pid.unwrap();
 
-    // kill -9（FR-3.1 验收：autorestart=always 时 kill -9 后自动拉起）
+    // kill -9（FR-3.1 验收：autorestart=always 时 kill -9 后自动拉起；Windows 由真机冒烟覆盖）
+    #[cfg(unix)]
     unsafe {
         libc::kill(pid1 as i32, libc::SIGKILL);
     }

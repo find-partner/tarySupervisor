@@ -6,9 +6,8 @@ use std::os::windows::ffi::OsStrExt;
 use std::sync::Arc;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, DUPLICATE_SAME_ACCESS, HANDLE,
+    CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE,
 };
-use windows_sys::Win32::Security::DuplicateHandle;
 use windows_sys::Win32::System::JobObjects::{
     CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -17,6 +16,21 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Threading::TerminateProcess;
 
 pub(super) struct JobWrap(pub HANDLE);
+// HANDLE 是进程级资源，任意线程均可调用相关 API；所有权转移/共享时序由调用方保证
+unsafe impl Send for JobWrap {}
+unsafe impl Sync for JobWrap {}
+
+/// 跨线程移交/共享的裸 HANDLE 包装（同 JobWrap 理由）；句柄值可复制，多个副本指同一 OS 句柄
+#[derive(Clone, Copy)]
+pub(super) struct SendHandle(pub HANDLE);
+unsafe impl Send for SendHandle {}
+unsafe impl Sync for SendHandle {}
+impl SendHandle {
+    /// 通过方法取 HANDLE：闭包按整体捕获包装体而非裸指针字段（edition 2021 精确捕获）
+    pub(super) fn raw(&self) -> HANDLE {
+        self.0
+    }
+}
 impl Drop for JobWrap {
     fn drop(&mut self) {
         unsafe { CloseHandle(self.0) };
