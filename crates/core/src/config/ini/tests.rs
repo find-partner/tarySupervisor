@@ -36,7 +36,7 @@ directory=~/work/api
 spawn_mode=pipe
 autostart=false
 autorestart=always
-environment=NODE_ENV="development", LOG_DIR="!${HOME}/logs/api", PORT="3000"
+environment=HOME="/home/dev", NODE_ENV="development", LOG_DIR="!${HOME}/logs/api", PORT="3000"
 redirect_stderr=false
 "#;
 
@@ -55,9 +55,12 @@ fn parses_spec_sample() {
     assert_eq!(d.matchers[0].pattern, r"https?://\S+");
     let a = &cfg.services[1];
     assert_eq!(a.autorestart, Autorestart::Always);
-    assert_eq!(a.env.len(), 3);
-    assert_eq!(a.env[1].expand, true);
-    assert_eq!(a.env[1].value, "${HOME}/logs/api");
+    // 自包含样例：HOME 在表内定义（CI/Windows 无系统 HOME），LOG_DIR 引用其前面的条目
+    assert_eq!(a.env.len(), 4);
+    assert_eq!(a.env[0].key, "HOME");
+    assert_eq!(a.env[0].value, "/home/dev");
+    assert_eq!(a.env[2].expand, true);
+    assert_eq!(a.env[2].value, "${HOME}/logs/api");
 }
 
 #[test]

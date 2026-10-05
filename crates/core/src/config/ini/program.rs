@@ -185,9 +185,11 @@ fn parse_matchers(props: Props<'_>, section_name: &str) -> Result<Vec<MatcherCon
 }
 
 /// stdout_logfile 路径解析：`~` 前缀展开；相对路径相对配置文件所在目录（§3.1）。
+/// 根锚定但无盘符的路径（Windows 上 `/tmp/a.log`）原样保留：它不是相对路径，
+/// join 基目录会截掉目录只留盘符得 `C:/tmp/a.log`，破坏 save/load roundtrip。
 fn resolve_log_path(p: &str, base_dir: Option<&Path>) -> PathBuf {
     let expanded = expand_tilde(p);
-    if expanded.is_absolute() {
+    if expanded.is_absolute() || expanded.has_root() {
         expanded
     } else {
         match base_dir {

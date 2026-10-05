@@ -149,7 +149,7 @@ directory=~/work/api
 spawn_mode=pipe
 autostart=false
 autorestart=always
-environment=NODE_ENV="development", LOG_DIR="!${HOME}/logs/api", PORT="3000"
+environment=HOME="/home/dev", NODE_ENV="development", LOG_DIR="!${HOME}/logs/api", PORT="3000"
 redirect_stderr=false
 ```
 

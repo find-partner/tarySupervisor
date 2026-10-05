@@ -53,27 +53,31 @@ pub fn run() {
             // 托盘 + 动态菜单（FR-1）
             tray::setup(&handle)?;
 
-            // SIGTERM/SIGINT → 走退出流程（否则进程被直接终止，托管服务将成为孤儿）
-            let sig_app = handle.clone();
-            std::thread::Builder::new()
-                .name("traysv-signal".into())
-                .spawn(move || {
-                    use signal_hook::consts::{SIGINT, SIGTERM};
-                    use signal_hook::iterator::Signals;
-                    let mut signals = match Signals::new([SIGINT, SIGTERM]) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            log::warn!("信号注册失败（SIGTERM 时服务可能无法清理）：{e}");
-                            return;
+            // SIGTERM/SIGINT → 走退出流程（否则进程被直接终止，托管服务将成为孤儿）。
+            // 仅 Unix：signal_hook 的 iterator 模块不存在于 Windows，退出走系统默认路径
+            #[cfg(unix)]
+            {
+                let sig_app = handle.clone();
+                std::thread::Builder::new()
+                    .name("traysv-signal".into())
+                    .spawn(move || {
+                        use signal_hook::consts::{SIGINT, SIGTERM};
+                        use signal_hook::iterator::Signals;
+                        let mut signals = match Signals::new([SIGINT, SIGTERM]) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                log::warn!("信号注册失败（SIGTERM 时服务可能无法清理）：{e}");
+                                return;
+                            }
+                        };
+                        for sig in signals.forever() {
+                            log::info!("收到信号 {sig}，执行退出流程（停止全部服务）…");
+                            sig_app.exit(0);
+                            break;
                         }
-                    };
-                    for sig in signals.forever() {
-                        log::info!("收到信号 {sig}，执行退出流程（停止全部服务）…");
-                        sig_app.exit(0);
-                        break;
-                    }
-                })
-                .ok();
+                    })
+                    .ok();
+            }
 
             log::info!("TraySupervisor 已启动（托盘常驻，无主窗口）");
             Ok(())
