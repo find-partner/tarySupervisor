@@ -693,6 +693,31 @@ mod tests {
     }
 
     #[test]
+    fn diff_catches_current_platform_chain_change() {
+        // 仅全局节 current_platform 变更（服务节不变）：解析链变化改变生效值 → hard
+        let settings = |cur: &str| GlobalSettings {
+            platforms: vec![PlatformDef { name: "home-mac".into(), family: Some("macos".into()) }],
+            current_platform: Some(cur.into()),
+            ..Default::default()
+        };
+        let mut svc = ServiceConfig { id: "a".into(), command: "default-cmd".into(), ..Default::default() };
+        svc.platform.insert(
+            "home-mac".into(),
+            PlatformVariant { command: "variant-cmd".into(), ..Default::default() },
+        );
+        let old = vec![svc.clone()];
+        let new = vec![svc];
+        let d = diff_configs(
+            &old,
+            &new,
+            &PlatformRegistry::new(&settings("home-mac")),
+            &PlatformRegistry::new(&settings("build-box")),
+        );
+        // 旧链 [home-mac, macos] 命中变体；新链 [build-box, macos] 无命中回退默认
+        assert_eq!(d.changed, vec!["a".to_string()], "{d:?}");
+    }
+
+    #[test]
     fn diff_detects_tagged_env_change_on_other_platform() {
         let mut old = vec![ServiceConfig {
             id: "a".into(),
@@ -809,11 +834,14 @@ pub fn diff_configs(
     }
     for s in new {
         if let Some(o) = old_map.get(s.id.as_str()).copied() {
-            if o == s {
-                continue;
-            }
             let oe = o.resolve_for(old_reg);
             let ne = s.resolve_for(new_reg);
+            // 原始结构相同且按各自解析链解析后的生效值也相同 → 跳过。
+            // 快捷路径必须包含解析比较：仅全局节 current_platform/platforms 变更时
+            // 服务节本身不变，但解析链变化会改变生效值（DESIGN §4.5），不能省略
+            if o == s && oe == ne {
+                continue;
+            }
             let hard = oe.command != ne.command
                 || oe.args != ne.args
                 || oe.cwd != ne.cwd
