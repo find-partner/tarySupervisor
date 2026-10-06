@@ -19,9 +19,12 @@ pub struct EnvEntry {
 }
 
 /// 平台变体（FR-2.13 / DESIGN §4.2）：命令行/工作目录/捕获模式/交互终端的
-/// 平台覆盖；None / 空串 = 跟随默认值
+/// 平台覆盖；None / 空串 = 跟随默认值。platform 名随行——IPC 双向统一 Vec：
+/// serde-wasm-bindgen 对 BTreeMap 的 object 反序列化曾丢字段（DEV-CONVENTIONS §2）
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PlatformVariantDto {
+    #[serde(default)]
+    pub platform: String,
     #[serde(default)]
     pub command_line: Option<String>,
     #[serde(default)]
@@ -139,9 +142,6 @@ pub struct ServiceConfigDto {
     pub log: LogPolicyDto,
     #[serde(default)]
     pub matchers: Vec<MatcherConfig>,
-    /// 基础配置字段的平台变体（键 ∈ 平台注册表，FR-2.13）
-    #[serde(default)]
-    pub platform: BTreeMap<String, PlatformVariantDto>,
 }
 
 fn d3() -> u64 {
@@ -182,9 +182,9 @@ pub struct ServiceBriefOut {
     /// 当前平台生效命令行（DESIGN §4.2）：编辑页「本机实际执行」提示用
     #[serde(default)]
     pub effective_command_line: String,
-    /// 平台变体回显（含非本机平台，存盘无损）
+    /// 平台变体回显（含非本机平台，存盘无损）；Vec 下发（见 PlatformVariantDto）
     #[serde(default)]
-    pub platform: BTreeMap<String, PlatformVariantDto>,
+    pub platform: Vec<PlatformVariantDto>,
     /// 日志单文件上限的带单位展示值（如 `10MB`；未启用文件日志为空，FR-2.2 / D-16）
     #[serde(default)]
     pub log_max_bytes_text: String,
@@ -242,9 +242,25 @@ pub struct ServiceInput {
     pub log_max_files: u32,
     pub log_compress: bool,
     pub matchers: Vec<MatcherConfig>,
-    /// 基础配置字段的平台变体（FR-2.13）
+    /// 基础配置字段的平台变体（FR-2.13）。
+    /// 上传方向刻意用 Vec 而非 BTreeMap：serde-wasm-bindgen 把 map 序列化为
+    /// JS Map，经 Tauri invoke 的 JSON 通道会退化为 {}（DEV-CONVENTIONS §2）
     #[serde(default)]
-    pub platform: BTreeMap<String, PlatformVariantDto>,
+    pub platform: Vec<PlatformVariantUp>,
+}
+
+/// 上传方向的平台变体条目（platform 名随行携带）
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct PlatformVariantUp {
+    pub platform: String,
+    #[serde(default)]
+    pub command_line: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub spawn_mode: Option<String>,
+    #[serde(default)]
+    pub term_interactive: Option<bool>,
 }
 
 // ---------- 终端屏幕（core::term 序列化镜像） ----------

@@ -696,14 +696,24 @@ mod tests {
     fn diff_catches_current_platform_chain_change() {
         // 仅全局节 current_platform 变更（服务节不变）：解析链变化改变生效值 → hard
         let settings = |cur: &str| GlobalSettings {
-            platforms: vec![PlatformDef { name: "home-mac".into(), family: Some("macos".into()) }],
+            platforms: vec![PlatformDef {
+                name: "home-mac".into(),
+                family: Some("macos".into()),
+            }],
             current_platform: Some(cur.into()),
             ..Default::default()
         };
-        let mut svc = ServiceConfig { id: "a".into(), command: "default-cmd".into(), ..Default::default() };
+        let mut svc = ServiceConfig {
+            id: "a".into(),
+            command: "default-cmd".into(),
+            ..Default::default()
+        };
         svc.platform.insert(
             "home-mac".into(),
-            PlatformVariant { command: "variant-cmd".into(), ..Default::default() },
+            PlatformVariant {
+                command: "variant-cmd".into(),
+                ..Default::default()
+            },
         );
         let old = vec![svc.clone()];
         let new = vec![svc];

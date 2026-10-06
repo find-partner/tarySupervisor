@@ -47,8 +47,10 @@ pub struct ServiceInput {
     pub log_max_files: u32,
     pub log_compress: bool,
     pub matchers: Vec<MatcherIn>,
+    /// 平台变体（FR-2.13）：上传方向用 Vec（platform 名随行）——
+    /// 前端 serde-wasm-bindgen 把 map 序列化为 JS Map，经 invoke JSON 通道会退化为 {}
     #[serde(default)]
-    pub platform: BTreeMap<String, PlatformVariantIn>,
+    pub platform: Vec<PlatformVariantIn>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +67,7 @@ pub struct EnvEntryIn {
 /// 平台变体入参（DESIGN §4.7）：None / 空串 = 跟随默认值
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlatformVariantIn {
+    pub platform: String,
     #[serde(default)]
     pub command_line: Option<String>,
     #[serde(default)]
@@ -122,7 +125,8 @@ fn build_service_config(input: &ServiceInput) -> Result<ServiceConfig, Vec<Strin
     };
     // 平台变体（FR-2.13）：切分各平台命令行；全空变体跳过
     let mut platform: BTreeMap<String, PlatformVariant> = BTreeMap::new();
-    for (p, v) in &input.platform {
+    for v in &input.platform {
+        let p = v.platform.trim().to_string();
         let mut pv = PlatformVariant::default();
         if let Some(line) = v
             .command_line
@@ -158,7 +162,7 @@ fn build_service_config(input: &ServiceInput) -> Result<ServiceConfig, Vec<Strin
         }
         pv.term_interactive = v.term_interactive;
         if !pv.is_empty() {
-            platform.insert(p.clone(), pv);
+            platform.insert(p, pv);
         }
     }
     if !errors.is_empty() {
@@ -239,9 +243,12 @@ fn build_service_config(input: &ServiceInput) -> Result<ServiceConfig, Vec<Strin
     })
 }
 
-/// 平台变体回显（DESIGN §4.7）：命令行重新 join 为单行（roundtrip 安全）
+/// 平台变体回显（DESIGN §4.7）：命令行重新 join 为单行（roundtrip 安全）。
+/// platform 名随行、以 Vec 下发——BTreeMap 经 serde-wasm-bindgen 反序列化到前端
+/// 曾丢字段（spawn_mode 等），IPC 双向统一 Vec（DEV-CONVENTIONS §2）
 #[derive(Debug, Clone, Serialize)]
 pub struct PlatformVariantOut {
+    pub platform: String,
     pub command_line: String,
     pub cwd: Option<String>,
     pub spawn_mode: Option<String>,
@@ -256,8 +263,8 @@ pub struct ServiceBriefOut {
     pub command_line: String,
     /// 当前平台生效命令行（DESIGN §4.2）：托盘/编辑页「本机实际执行」提示用
     pub effective_command_line: String,
-    /// 平台变体回显（含非本机平台，存盘无损）
-    pub platform: BTreeMap<String, PlatformVariantOut>,
+    /// 平台变体回显（含非本机平台，存盘无损）；Vec 下发理由同 PlatformVariantOut
+    pub platform: Vec<PlatformVariantOut>,
     /// 日志单文件上限的带单位展示值（如 `10MB`；未启用文件日志为空，FR-2.2 / D-16）
     pub log_max_bytes_text: String,
 }
@@ -266,8 +273,9 @@ fn registry_of(state: &State<'_, AppState>) -> PlatformRegistry {
     PlatformRegistry::new(&state.mgr.current_config().settings)
 }
 
-fn variant_out(v: &PlatformVariant) -> PlatformVariantOut {
+fn variant_out(platform: &str, v: &PlatformVariant) -> PlatformVariantOut {
     PlatformVariantOut {
+        platform: platform.to_string(),
         command_line: join_command_line(&v.command, &v.args),
         cwd: v.directory.as_ref().map(|d| d.display().to_string()),
         spawn_mode: v.spawn_mode.map(|m| m.as_str().to_string()),
@@ -292,7 +300,7 @@ pub fn list_services(state: State<'_, AppState>) -> Vec<ServiceBriefOut> {
                 .config
                 .platform
                 .iter()
-                .map(|(p, v)| (p.clone(), variant_out(v)))
+                .map(|(p, v)| variant_out(p, v))
                 .collect();
             let log_max_bytes_text = b
                 .config

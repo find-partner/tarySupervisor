@@ -38,7 +38,14 @@ pub fn basic_panel(
     // 粘贴解析（FR-2.12）：自动（paste 事件）+ 「解析」按钮兜底
     let paste_hint = create_rw_signal(String::new());
     let parse_line = move |line: String| {
-        let args = bridge::to_js(&line);
+        // Tauri invoke 第二参数是 args 对象：后端签名为 parse_pasted_line(line: String)
+        let obj = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &obj,
+            &wasm_bindgen::JsValue::from_str("line"),
+            &bridge::to_js(&line),
+        );
+        let args = obj.into();
         spawn_local(async move {
             match bridge::invoke("parse_pasted_line", Some(args)).await {
                 Ok(v) => match serde_wasm_bindgen::from_value::<PastedLineDto>(v) {
@@ -337,18 +344,46 @@ fn platform_variant_fields(
         let p = platform.clone();
         move || form.get().platform_get(&p).cwd
     };
-    let g_sm = {
+    // select 回显：prop:value 首次求值早于 options 挂载会丢失选中态，而 effect/spawn_local
+    // 在动态子树重建时会在已销毁 owner 上 panic（leptos 0.6 runtime.rs:824）。
+    // 故把整个 select 作为动态子树随值重建，选中态用构建期 selected 属性表达。
+    let sel_sm = {
         let p = platform.clone();
-        move || form.get().platform_get(&p).spawn_mode
+        move || {
+            let v = form.get().platform_get(&p).spawn_mode;
+            let p2 = p.clone();
+            view! {
+                <select on:change=move |e| {
+                        let v = event_target_value(&e);
+                        set_platform_field(form, &p2, |pf| pf.spawn_mode = v, mark0);
+                    }>
+                    <option value="" selected=v.is_empty()>"跟随默认"</option>
+                    <option value="Pipe" selected=v == "Pipe">"管道（pipe）"</option>
+                    <option value="Pty" selected=v == "Pty">"伪终端（pty）"</option>
+                </select>
+            }
+        }
     };
-    let g_ti = {
+    let sel_ti = {
         let p = platform.clone();
-        move || form.get().platform_get(&p).term_interactive
+        move || {
+            let v = form.get().platform_get(&p).term_interactive;
+            let p2 = p.clone();
+            view! {
+                <select on:change=move |e| {
+                        let v = event_target_value(&e);
+                        set_platform_field(form, &p2, |pf| pf.term_interactive = v, mark0);
+                    }>
+                    <option value="" selected=v.is_empty()>"跟随默认"</option>
+                    <option value="true" selected=v == "true">"true"</option>
+                    <option value="false" selected=v == "false">"false"</option>
+                </select>
+            }
+        }
     };
     // 四个字段处理器各自持有克隆（move 闭包独占所有权）
     let p_cmd = platform.clone();
     let p_cwd = platform.clone();
-    let p_sm = platform.clone();
     view! {
         <div class="hint" style="margin:0 0 6px;">{family_hint}</div>
         <div class="field-grid">
@@ -367,27 +402,9 @@ fn platform_variant_fields(
                     set_platform_field(form, &p_cwd, |pf| pf.cwd = v, mark0);
                 } />
             <label>{label_sm}</label>
-            <select
-                on:change=move |e| {
-                    let v = event_target_value(&e);
-                    set_platform_field(form, &p_sm, |pf| pf.spawn_mode = v, mark0);
-                }
-                prop:value=g_sm>
-                <option value="">"跟随默认"</option>
-                <option value="Pipe">"管道（pipe）"</option>
-                <option value="Pty">"伪终端（pty）"</option>
-            </select>
+            {sel_sm}
             <label>{label_ti}</label>
-            <select
-                on:change=move |e| {
-                    let v = event_target_value(&e);
-                    set_platform_field(form, &platform, |pf| pf.term_interactive = v, mark0);
-                }
-                prop:value=g_ti>
-                <option value="">"跟随默认"</option>
-                <option value="true">"true"</option>
-                <option value="false">"false"</option>
-            </select>
+            {sel_ti}
         </div>
     }
 }
@@ -466,33 +483,42 @@ fn env_table(
     }
 }
 
-/// 单行平台下拉（全部平台 + 注册表平台，DESIGN §4.7）
+/// 单行平台下拉（全部平台 + 注册表平台，DESIGN §4.7）。
+/// 整个 select 作为动态子树随值重建（选中态用构建期 selected 属性）：
+/// prop:value 求值早于 options 挂载会丢选中态，而 effect/spawn_local 在动态子树
+/// 重建时会在已销毁 owner 上 panic（leptos 0.6 runtime.rs:824）
 fn platform_select(
     form: RwSignal<FormState>,
     i: usize,
     mark0: impl Fn() + Copy + 'static,
     platform_info: RwSignal<PlatformInfoDto>,
 ) -> impl IntoView {
-    let names = move || registry_platforms(platform_info);
-    view! {
-        <select style="min-width:110px"
-            on:change=move |e| {
-                let v = event_target_value(&e);
-                form.update(|f| {
-                    if let Some(en) = f.env.get_mut(i) {
-                        en.platform = (!v.is_empty()).then(|| v.clone());
-                    }
-                });
-                mark0();
-            }
-            prop:value=move || form.get().env.get(i).and_then(|e| e.platform.clone()).unwrap_or_default()>
-            <option value="">"全部平台"</option>
-            {move || {
-                names().into_iter().map(|n| {
-                    let n2 = n.clone();
-                    view! { <option value={n.clone()}>{move || n2.clone()}</option> }
-                }).collect::<Vec<_>>()
-            }}
-        </select>
+    move || {
+        let current = form
+            .get()
+            .env
+            .get(i)
+            .and_then(|e| e.platform.clone())
+            .unwrap_or_default();
+        let names = registry_platforms(platform_info);
+        let p2 = i;
+        view! {
+            <select style="min-width:110px"
+                on:change=move |e| {
+                    let v = event_target_value(&e);
+                    form.update(|f| {
+                        if let Some(en) = f.env.get_mut(p2) {
+                            en.platform = (!v.is_empty()).then(|| v.clone());
+                        }
+                    });
+                    mark0();
+                }>
+                <option value="" selected=current.is_empty()>"全部平台"</option>
+                {names.into_iter().map(|n| {
+                    let is_sel = current == n;
+                    view! { <option value={n.clone()} selected=is_sel>{move || n.clone()}</option> }
+                }).collect::<Vec<_>>()}
+            </select>
+        }
     }
 }

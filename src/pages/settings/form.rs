@@ -24,6 +24,7 @@ pub struct PlatformForm {
 impl PlatformForm {
     fn into_dto(self) -> PlatformVariantDto {
         PlatformVariantDto {
+            platform: String::new(), // 由 input_from_form 按键名填充
             command_line: (!self.command_line.trim().is_empty())
                 .then(|| self.command_line.trim().to_string()),
             cwd: (!self.cwd.trim().is_empty()).then(|| self.cwd.trim().to_string()),
@@ -105,7 +106,7 @@ pub fn form_from_brief(b: &ServiceBriefOut) -> FormState {
         platform: b
             .platform
             .iter()
-            .map(|(p, d)| (p.clone(), PlatformForm::from_dto(d.clone())))
+            .map(|d| (d.platform.clone(), PlatformForm::from_dto(d.clone())))
             .collect(),
         effective_command_line: b.effective_command_line.clone(),
         redirect_stderr: b.config.redirect_stderr,
@@ -170,7 +171,17 @@ pub fn input_from_form(f: &FormState) -> ServiceInput {
         platform: f
             .platform
             .iter()
-            .map(|(p, pf)| (p.clone(), pf.clone().into_dto()))
+            .map(|(p, pf)| {
+                let mut d = pf.clone().into_dto();
+                d.platform = p.clone();
+                crate::dto::PlatformVariantUp {
+                    platform: p.clone(),
+                    command_line: d.command_line,
+                    cwd: d.cwd,
+                    spawn_mode: d.spawn_mode,
+                    term_interactive: d.term_interactive,
+                }
+            })
             .collect(),
         redirect_stderr: f.redirect_stderr,
         autostart: f.autostart,
