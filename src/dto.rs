@@ -5,7 +5,6 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct EnvEntry {

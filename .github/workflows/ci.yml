@@ -6,20 +6,69 @@
 #   2. 全量编译检查（Windows runner 会真实编译 Job Object / windows-sys 平台分支）
 #   3. 前端 WASM 构建（trunk build，无 Node.js）
 #
+# 触发策略（节省 Actions 配额：私有仓库 macOS runner 按 10 倍计费、Windows 2 倍）：
+#   - PR（→ main）与纯文档改动：仅 Linux 快速检查（quick-check，1x 计费）
+#   - push 到 main：三平台全矩阵（platform-matrix）——Windows 平台分支的编译错误
+#     只能在 Windows runner 暴露（本项目历史上多次因此修复），不做削减
+#   - 发布产物走 release.yml（tag 触发），与本工作流无关
+#
 # 说明：冒烟脚本需 GUI 会话（托盘），不在 CI 中运行；见 docs/SYSTEM-TEST.md §4。
 name: CI
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "spikes/**"
   pull_request:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "spikes/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  # 快速检查：PR 与 main push 共用（Linux 单平台，1x 计费，分钟消耗最低）
+  quick-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 安装 Linux 系统依赖（trunk build 需要）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: 安装 trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+
+      - name: core 测试（单元 + 集成，真实进程）
+        run: cargo test -p traysupervisor-core
+
+      - name: 全量编译检查（含 src-tauri 平台分支）
+        run: cargo check --workspace --all-targets
+
+      - name: 前端构建（Leptos → WASM）
+        run: trunk build
+
+  # 三平台全矩阵：仅 main push（Windows 平台分支只能在此真实编译）
+  platform-matrix:
+    if: github.event_name == 'push'
     strategy:
       fail-fast: false
       matrix:

@@ -47,6 +47,16 @@
 
 构建：`cargo build -p traysupervisor`（debug 即可）；如需 GUI 窗口渲染则 `trunk build` 后用 release 或先起 `trunk serve`。
 
+### 3.1 最低系统版本与发布产物（release.yml）
+
+| 平台 | 最低版本 | 发布产物 | 依据 |
+|------|---------|---------|------|
+| Windows | **10 x64**（Win7/8 不支持） | msi + nsis 安装器 | Rust ≥1.78 的 Windows 目标最低 Win10；WebView2 运行时对 Win7/8 的支持已于 2023-01 终止（最后版本 109 固定版，无安全更新）；Tauri v2 / windows-sys 0.59 无 Win7 官方支持。如确需 Win7 须降级 Tauri v1 + Rust ≤1.77 工具链，属产品级决策，不做承诺 |
+| macOS | **10.13+**（12 完全覆盖） | universal dmg（Intel + Apple Silicon） | release 构建设置 `MACOSX_DEPLOYMENT_TARGET=10.13`（Tauri v2 最低要求）；Apple Silicon 最低 11。发布产物在 macos-14 runner 构建，低版本系统按部署目标兼容 |
+| Linux | glibc 较新发行版（Ubuntu 24.04 基线） | deb + AppImage | WebKitGTK 4.1 运行时 |
+
+产物由 `git tag vX.Y.Z && git push origin vX.Y.Z` 触发 release.yml 自动构建并附到 GitHub Release；未打 tag 前不会出现任何 Release 结果（此前仓库无 tag 亦无发布 job，故 Release 页为空）。
+
 ## 4. 脚本化用例（L3）
 
 权威步骤以脚本内容为准（断言内嵌、自动备份/恢复用户配置）：
