@@ -198,14 +198,16 @@ pub fn basic_panel(
                 }
             }}
             <label>"经 shell 启动"</label>
-            <label style="display:flex;gap:6px;align-items:center;color:var(--fg)">
-                <input type="checkbox" prop:checked=move || form.get().shell
+            <label style="display:flex;gap:8px;align-items:flex-start;color:var(--fg)">
+                <input type="checkbox" style="margin-top:2px;flex:none" prop:checked=move || form.get().shell
                     on:change=move |e| {
                         let v = event_target_checked(&e);
                         set_form_value(form, move |f| f.shell = v);
                         mark0();
                     } />
-                "经登录 shell（bash/zsh）启动，继承终端环境（PATH、nvm 等）；命令行按原样重组，不支持管道等 shell 语法"
+                <span style="flex:1;line-height:1.5">
+                    "经登录 shell（bash/zsh）启动，继承终端环境（PATH、nvm 等）；命令行按原样重组，不支持管道等 shell 语法"
+                </span>
             </label>
             <label>"工作目录"</label>
             <input type="text" placeholder="默认用户目录，支持 ~"
@@ -226,14 +228,16 @@ pub fn basic_panel(
                 <option value="Pty">"伪终端（pty，启用终端视图）"</option>
             </select>
             <label>"交互终端"</label>
-            <label style="display:flex;gap:6px;align-items:center;color:var(--fg)">
-                <input type="checkbox" prop:checked=move || form.get().term_interactive
+            <label style="display:flex;gap:8px;align-items:flex-start;color:var(--fg)">
+                <input type="checkbox" style="margin-top:2px;flex:none" prop:checked=move || form.get().term_interactive
                     on:change=move |e| {
                         let v = event_target_checked(&e);
                         set_form_value(form, move |f| f.term_interactive = v);
                         mark0();
                     } />
-                "终端视图可写（键盘输入转发 stdin；需 pty 模式）"
+                <span style="flex:1;line-height:1.5">
+                    "终端视图可写（键盘输入转发 stdin；需启动捕获模式为伪终端 pty）"
+                </span>
             </label>
         </div>
 

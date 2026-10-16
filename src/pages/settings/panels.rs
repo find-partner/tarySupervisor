@@ -90,8 +90,9 @@ pub fn log_panel(form: RwSignal<FormState>, dirty: RwSignal<Vec<bool>>) -> impl 
                         });
                         mark2();
                     } />
-                "启用文件日志（不启用 = 仅内存环形缓冲）"
+                "启用文件日志"
             </label>
+            <span class="hint indent">"不启用 = 仅内存环形缓冲"</span>
             <label>"文件路径"</label>
             <input type="text" placeholder="留空保存时自动生成 ~/.traysupervisor/logs/<服务ID>.log"
                 prop:value=move || form.get().log_path.clone()
