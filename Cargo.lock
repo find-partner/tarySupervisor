@@ -5128,7 +5128,7 @@ dependencies = [
 
 [[package]]
 name = "traysupervisor"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "env_logger",
  "log",
@@ -5146,7 +5146,7 @@ dependencies = [
 
 [[package]]
 name = "traysupervisor-core"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",

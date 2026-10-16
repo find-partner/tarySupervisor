@@ -1,6 +1,6 @@
 [package]
 name = "traysupervisor-core"
-version = "0.1.0"
+version = "0.5.0"
 edition = "2021"
 description = "TraySupervisor 纯 Rust 核心：配置/进程管理/日志/终端仿真（无 tauri 依赖，NFR-8）"
 
