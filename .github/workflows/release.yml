@@ -29,17 +29,17 @@ jobs:
       matrix:
         include:
           - os: macos-14
-            targets: aarch64-apple-darwin,x86_64-apple-darwin
+            targets: aarch64-apple-darwin,x86_64-apple-darwin,wasm32-unknown-unknown
             tauri_args: --target universal-apple-darwin
             bundles: target/universal-apple-darwin/release/bundle/dmg/*.dmg
           - os: windows-2022
-            targets: ""
+            targets: wasm32-unknown-unknown
             tauri_args: ""
             bundles: |
               target/release/bundle/msi/*.msi
               target/release/bundle/nsis/*.exe
           - os: ubuntu-24.04
-            targets: ""
+            targets: wasm32-unknown-unknown
             tauri_args: ""
             bundles: |
               target/release/bundle/deb/*.deb
