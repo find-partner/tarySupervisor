@@ -3,9 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use traysupervisor_core::config::{
-    Autorestart, EnvEntry, MatcherConfig, ServiceConfig, SpawnMode,
-};
+use traysupervisor_core::config::{Autorestart, EnvEntry, MatcherConfig, ServiceConfig, SpawnMode};
 use traysupervisor_core::events::SvcState;
 use traysupervisor_core::ServiceManager;
 
@@ -58,12 +56,22 @@ fn pipe_lifecycle_start_stop() {
     let mgr = ServiceManager::new(cfg, dir.path().join("config.ini")).unwrap();
     mgr.start("t-sleep").unwrap();
 
-    assert!(wait_state(&mgr, "t-sleep", SvcState::Running, Duration::from_secs(3)));
+    assert!(wait_state(
+        &mgr,
+        "t-sleep",
+        SvcState::Running,
+        Duration::from_secs(3)
+    ));
     let pid = mgr.list()[0].pid;
     assert!(pid.is_some(), "RUNNING 状态应带 PID");
 
     mgr.stop("t-sleep").unwrap();
-    assert!(wait_state(&mgr, "t-sleep", SvcState::Stopped, Duration::from_secs(3)));
+    assert!(wait_state(
+        &mgr,
+        "t-sleep",
+        SvcState::Stopped,
+        Duration::from_secs(3)
+    ));
     // FR-3.3：停止后进程应已回收（kill(pid,0) 报 ESRCH；Windows 由真机冒烟覆盖，SYSTEM-TEST §4）
     #[cfg(unix)]
     if let Some(pid) = pid {
@@ -91,12 +99,22 @@ fn pipe_spawn_inherits_parent_env_on_windows() {
     let mgr = ServiceManager::new(cfg, dir.path().join("config.ini")).unwrap();
     mgr.start("t-win-env").unwrap();
     assert!(
-        wait_state(&mgr, "t-win-env", SvcState::Running, Duration::from_secs(10)),
+        wait_state(
+            &mgr,
+            "t-win-env",
+            SvcState::Running,
+            Duration::from_secs(10)
+        ),
         "pipe 子进程应继承父环境存活：{:?}",
         mgr.get_log("t-win-env", 0, 200)
     );
     mgr.stop("t-win-env").unwrap();
-    assert!(wait_state(&mgr, "t-win-env", SvcState::Stopped, Duration::from_secs(15)));
+    assert!(wait_state(
+        &mgr,
+        "t-win-env",
+        SvcState::Stopped,
+        Duration::from_secs(15)
+    ));
     mgr.shutdown_all();
 }
 
@@ -112,7 +130,12 @@ fn unexpected_exit_goes_exited() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = ServiceManager::new(cfg, dir.path().join("config.ini")).unwrap();
     mgr.start("t-exit").unwrap();
-    assert!(wait_state(&mgr, "t-exit", SvcState::Exited, Duration::from_secs(5)));
+    assert!(wait_state(
+        &mgr,
+        "t-exit",
+        SvcState::Exited,
+        Duration::from_secs(5)
+    ));
     let brief = &mgr.list()[0];
     assert_eq!(brief.exit_code, Some(0));
     mgr.shutdown_all();
@@ -130,7 +153,12 @@ fn autorestart_always_restarts_after_kill9() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = ServiceManager::new(cfg, dir.path().join("config.ini")).unwrap();
     mgr.start("t-restart").unwrap();
-    assert!(wait_state(&mgr, "t-restart", SvcState::Running, Duration::from_secs(3)));
+    assert!(wait_state(
+        &mgr,
+        "t-restart",
+        SvcState::Running,
+        Duration::from_secs(3)
+    ));
     let pid1 = mgr.list()[0].pid.unwrap();
 
     // kill -9（FR-3.1 验收：autorestart=always 时 kill -9 后自动拉起；Windows 由真机冒烟覆盖）
@@ -142,10 +170,7 @@ fn autorestart_always_restarts_after_kill9() {
     assert!(
         wait_pred(
             || {
-                mgr.list()[0]
-                    .pid
-                    .map(|p| p != pid1)
-                    .unwrap_or(false)
+                mgr.list()[0].pid.map(|p| p != pid1).unwrap_or(false)
                     && mgr.list()[0].state == SvcState::Running
             },
             Duration::from_secs(8)
@@ -169,8 +194,18 @@ fn spawn_error_goes_backoff_then_fatal() {
     let mgr = ServiceManager::new(cfg, dir.path().join("config.ini")).unwrap();
     mgr.start("t-fatal").unwrap();
     // 第一次失败 → BACKOFF(1s) → 重试失败 → FATAL
-    assert!(wait_state(&mgr, "t-fatal", SvcState::Backoff, Duration::from_secs(2)));
-    assert!(wait_state(&mgr, "t-fatal", SvcState::Fatal, Duration::from_secs(5)));
+    assert!(wait_state(
+        &mgr,
+        "t-fatal",
+        SvcState::Backoff,
+        Duration::from_secs(2)
+    ));
+    assert!(wait_state(
+        &mgr,
+        "t-fatal",
+        SvcState::Fatal,
+        Duration::from_secs(5)
+    ));
     mgr.shutdown_all();
 }
 
@@ -179,11 +214,17 @@ fn stdout_capture_and_env_expansion() {
     let cfg = traysupervisor_core::config::AppConfig {
         services: vec![ServiceConfig {
             env: vec![
-                EnvEntry { key: "TRAY_A".into(), value: "1".into(), expand: false },
+                EnvEntry {
+                    key: "TRAY_A".into(),
+                    value: "1".into(),
+                    expand: false,
+                    platform: None,
+                },
                 EnvEntry {
                     key: "TRAY_B".into(),
                     value: "${TRAY_A}-x".into(),
                     expand: true,
+                    platform: None,
                 },
             ],
             ..svc("t-echo", "/usr/bin/env", &[])
@@ -193,7 +234,12 @@ fn stdout_capture_and_env_expansion() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = ServiceManager::new(cfg, dir.path().join("config.ini")).unwrap();
     mgr.start("t-echo").unwrap();
-    assert!(wait_state(&mgr, "t-echo", SvcState::Exited, Duration::from_secs(5)));
+    assert!(wait_state(
+        &mgr,
+        "t-echo",
+        SvcState::Exited,
+        Duration::from_secs(5)
+    ));
     // env 展开结果出现在子进程环境中（FR-2 验收：子进程环境正确）
     assert!(
         wait_pred(
@@ -231,10 +277,10 @@ fn matcher_url_hit_via_real_output() {
     assert!(
         wait_pred(
             || {
-                mgr.match_items("t-url")
-                    .iter()
-                    .any(|i| i.label == "🌐 打开 http://127.0.0.1:8000"
-                        && i.url.as_deref() == Some("http://127.0.0.1:8000"))
+                mgr.match_items("t-url").iter().any(|i| {
+                    i.label == "🌐 打开 http://127.0.0.1:8000"
+                        && i.url.as_deref() == Some("http://127.0.0.1:8000")
+                })
             },
             Duration::from_secs(3)
         ),
@@ -265,7 +311,10 @@ fn matcher_url_hit_via_real_output() {
         "未观察到重启"
     );
     assert!(
-        wait_pred(|| !mgr.match_items("t-url").is_empty(), Duration::from_secs(3)),
+        wait_pred(
+            || !mgr.match_items("t-url").is_empty(),
+            Duration::from_secs(3)
+        ),
         "重启后新输出应重新生成快捷项"
     );
     mgr.shutdown_all();
@@ -283,7 +332,12 @@ fn pty_mode_capture_and_term_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = ServiceManager::new(cfg, dir.path().join("config.ini")).unwrap();
     mgr.start("t-pty").unwrap();
-    assert!(wait_state(&mgr, "t-pty", SvcState::Exited, Duration::from_secs(5)));
+    assert!(wait_state(
+        &mgr,
+        "t-pty",
+        SvcState::Exited,
+        Duration::from_secs(5)
+    ));
     assert!(
         wait_pred(
             || {
@@ -314,7 +368,12 @@ fn hot_reload_applies_diff() {
 
     let cfg = traysupervisor_core::config::load_app_config(&path).unwrap();
     let mgr = ServiceManager::new(cfg, path.clone()).unwrap();
-    assert!(wait_state(&mgr, "hr-a", SvcState::Stopped, Duration::from_secs(2)));
+    assert!(wait_state(
+        &mgr,
+        "hr-a",
+        SvcState::Stopped,
+        Duration::from_secs(2)
+    ));
 
     // 手写新配置：改名 + 新增服务（added）+ autostart 不自动启动（CONFIG-SPEC §8）
     std::fs::write(
@@ -328,7 +387,11 @@ fn hot_reload_applies_diff() {
     assert_eq!(ids, vec!["hr-a", "hr-b"]);
     let a = &mgr.list()[0];
     assert_eq!(a.config.name, "改名");
-    assert_eq!(a.state, SvcState::Stopped, "热载 added/未受影响服务不自动启动");
+    assert_eq!(
+        a.state,
+        SvcState::Stopped,
+        "热载 added/未受影响服务不自动启动"
+    );
     mgr.shutdown_all();
 }
 
@@ -347,7 +410,12 @@ fn interactive_term_stdin_write() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = ServiceManager::new(cfg, dir.path().join("config.ini")).unwrap();
     mgr.start("t-rw").unwrap();
-    assert!(wait_state(&mgr, "t-rw", SvcState::Running, Duration::from_secs(5)));
+    assert!(wait_state(
+        &mgr,
+        "t-rw",
+        SvcState::Running,
+        Duration::from_secs(5)
+    ));
 
     mgr.write_stdin("t-rw", b"hello-stdin\n".to_vec()).unwrap();
     assert!(
@@ -367,7 +435,12 @@ fn interactive_term_stdin_write() {
 
     // 停止后写端清空 → 错误
     mgr.stop("t-rw").unwrap();
-    assert!(wait_state(&mgr, "t-rw", SvcState::Stopped, Duration::from_secs(3)));
+    assert!(wait_state(
+        &mgr,
+        "t-rw",
+        SvcState::Stopped,
+        Duration::from_secs(3)
+    ));
     assert!(
         mgr.write_stdin("t-rw", b"x".to_vec()).is_err(),
         "停止后 write_stdin 应报错（写端已清空）"
@@ -390,7 +463,12 @@ fn apply_saved_config_does_not_restart_running_service() {
     traysupervisor_core::config::save_app_config(&cfg, &path).unwrap();
     let mgr = ServiceManager::new(cfg.clone(), path.clone()).unwrap();
     mgr.start("t-keep").unwrap();
-    assert!(wait_state(&mgr, "t-keep", SvcState::Running, Duration::from_secs(3)));
+    assert!(wait_state(
+        &mgr,
+        "t-keep",
+        SvcState::Running,
+        Duration::from_secs(3)
+    ));
     let pid_before = mgr.list()[0].pid;
 
     // 修改 command（hard change）后写盘 + apply_saved_config：不重启 → PID 不变
@@ -437,7 +515,12 @@ fn shell_mode_runs_via_login_shell_and_preserves_argv() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = ServiceManager::new(cfg, dir.path().join("config.ini")).unwrap();
     mgr.start("t-shell").unwrap();
-    assert!(wait_state(&mgr, "t-shell", SvcState::Exited, Duration::from_secs(30)));
+    assert!(wait_state(
+        &mgr,
+        "t-shell",
+        SvcState::Exited,
+        Duration::from_secs(30)
+    ));
     let want = r#"a b it's q "x" q"#;
     assert!(
         wait_pred(

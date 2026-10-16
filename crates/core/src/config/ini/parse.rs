@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use crate::config::{validate_app, AppConfig, GlobalSettings, ServiceConfig};
 use super::program::parse_program;
+use crate::config::{validate_app, AppConfig, GlobalSettings, PlatformDef, ServiceConfig};
 
 /// 手写 INI 解析：产出（节名, 有序键值对）列表；值完全原样。
 fn parse_ini_sections(text: &str) -> Result<Vec<(String, Vec<(String, String)>)>, String> {
@@ -36,7 +36,9 @@ fn parse_ini_sections(text: &str) -> Result<Vec<(String, Vec<(String, String)>)>
         match sections.last_mut() {
             Some((_, kvs)) => kvs.push((k.to_string(), v.to_string())),
             None => {
-                return Err(format!("第 {lineno} 行：键 {k} 不在任何节内（应放入 [program:<id>] 或 [traysupervisor]）"))
+                return Err(format!(
+                "第 {lineno} 行：键 {k} 不在任何节内（应放入 [program:<id>] 或 [traysupervisor]）"
+            ))
             }
         }
     }
@@ -62,7 +64,15 @@ pub fn parse_ini_str(text: &str, base_dir: Option<&Path>) -> Result<AppConfig, S
                         settings.log_lines = parse_u32(v, "[traysupervisor] log_lines")?;
                     }
                     "notify_on_failure" => {
-                        settings.notify_on_failure = parse_bool(v, "[traysupervisor] notify_on_failure")?;
+                        settings.notify_on_failure =
+                            parse_bool(v, "[traysupervisor] notify_on_failure")?;
+                    }
+                    "platforms" => {
+                        settings.platforms = parse_platforms(v)?;
+                    }
+                    "current_platform" => {
+                        let t = v.trim();
+                        settings.current_platform = (!t.is_empty()).then(|| t.to_string());
                     }
                     other => return Err(format!("[traysupervisor] 未知键 {other}")),
                 }
@@ -71,7 +81,9 @@ pub fn parse_ini_str(text: &str, base_dir: Option<&Path>) -> Result<AppConfig, S
             let svc = parse_program(id, props, base_dir, name)?;
             services.push(svc);
         } else {
-            return Err(format!("未知节 [{name}]（仅允许 [traysupervisor] 与 [program:<id>]）"));
+            return Err(format!(
+                "未知节 [{name}]（仅允许 [traysupervisor] 与 [program:<id>]）"
+            ));
         }
     }
 
@@ -116,4 +128,38 @@ pub(super) fn parse_u64(v: &str, key: &str) -> Result<u64, String> {
     v.trim()
         .parse::<u64>()
         .map_err(|_| format!("{key}：非法整数 {v:?}"))
+}
+
+/// 自定义平台列表解析（CONFIG-SPEC §2 / DESIGN §4.1）：
+/// `platforms=home-mac:macos, office-win:windows, build-box`——逗号分隔，
+/// 每项为 `名字[:家族]`；家族须为内置平台名（合法性在此校验，成员关系由 validate 复核）。
+fn parse_platforms(v: &str) -> Result<Vec<PlatformDef>, String> {
+    let mut defs = Vec::new();
+    for item in v.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let (name, family) = match item.split_once(':') {
+            Some((n, f)) => (n.trim(), Some(f.trim())),
+            None => (item, None),
+        };
+        if name.is_empty() {
+            return Err(format!("[traysupervisor] platforms：{item:?} 缺少平台名"));
+        }
+        let family = family.filter(|f| !f.is_empty());
+        if let Some(f) = family.as_deref() {
+            if !crate::config::BUILTIN_PLATFORMS.contains(&f) {
+                return Err(format!(
+                    "[traysupervisor] platforms：平台 {name} 的家族 {f:?} 非法（须为 {}）",
+                    crate::config::BUILTIN_PLATFORMS.join(" / ")
+                ));
+            }
+        }
+        defs.push(PlatformDef {
+            name: name.to_string(),
+            family: family.map(str::to_string),
+        });
+    }
+    Ok(defs)
 }

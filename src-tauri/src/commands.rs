@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 use traysupervisor_core::config::{
-    join_command_line, split_command_line, system_var, validate_app, Autorestart, LogFilePolicy,
-    LogPolicy, MatcherConfig, ServiceConfig, SpawnMode,
+    join_command_line, parse_byte_size, split_command_line, split_env_prefixed_line, system_var,
+    validate_app, Autorestart, EnvEntry, LogFilePolicy, LogPolicy, MatcherConfig, PlatformDef,
+    PlatformRegistry, PlatformVariant, ServiceConfig, SpawnMode,
 };
 use traysupervisor_core::events::LogLine;
 use traysupervisor_core::expand_tilde;
@@ -17,7 +18,8 @@ use traysupervisor_core::term::TermScreen;
 
 use crate::AppState;
 
-/// 编辑表单入参：命令行为单行（§3.4 切分），env/matcher 与模型一致
+/// 编辑表单入参：命令行为单行（§3.4 切分），env/matcher 与模型一致；
+/// `platform` = 基础配置字段的平台变体（FR-2.13，键 ∈ 平台注册表）
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServiceInput {
     pub id: String,
@@ -45,6 +47,10 @@ pub struct ServiceInput {
     pub log_max_files: u32,
     pub log_compress: bool,
     pub matchers: Vec<MatcherIn>,
+    /// 平台变体（FR-2.13）：上传方向用 Vec（platform 名随行）——
+    /// 前端 serde-wasm-bindgen 把 map 序列化为 JS Map，经 invoke JSON 通道会退化为 {}
+    #[serde(default)]
+    pub platform: Vec<PlatformVariantIn>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,6 +59,23 @@ pub struct EnvEntryIn {
     pub value: String,
     #[serde(default)]
     pub expand: bool,
+    /// 行级平台标签（FR-2.13）：None = 全部平台
+    #[serde(default)]
+    pub platform: Option<String>,
+}
+
+/// 平台变体入参（DESIGN §4.7）：None / 空串 = 跟随默认值
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlatformVariantIn {
+    pub platform: String,
+    #[serde(default)]
+    pub command_line: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub spawn_mode: Option<String>,
+    #[serde(default)]
+    pub term_interactive: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,15 +119,64 @@ fn build_service_config(input: &ServiceInput) -> Result<ServiceConfig, Vec<Strin
         return Err(errors);
     }
     // 日志单文件上限：带单位大小 → 字节（FR-2.2 / HLD D-16）
-    let max_bytes = match traysupervisor_core::config::parse_byte_size(&input.log_max_bytes) {
+    let max_bytes = match parse_byte_size(&input.log_max_bytes) {
         Ok(v) => v,
         Err(e) => return Err(vec![format!("log_max_bytes：{e}")]),
     };
+    // 平台变体（FR-2.13）：切分各平台命令行；全空变体跳过
+    let mut platform: BTreeMap<String, PlatformVariant> = BTreeMap::new();
+    for v in &input.platform {
+        let p = v.platform.trim().to_string();
+        let mut pv = PlatformVariant::default();
+        if let Some(line) = v
+            .command_line
+            .as_deref()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+        {
+            match split_command_line(line) {
+                Ok((prog, pargs)) => {
+                    pv.command = prog;
+                    pv.args = pargs;
+                }
+                Err(e) => {
+                    errors.push(format!("command.{p}：{e}"));
+                    continue;
+                }
+            }
+        }
+        if let Some(c) = v.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            pv.directory = Some(expand_tilde(c));
+        }
+        if let Some(sm) = &v.spawn_mode {
+            if !sm.is_empty() {
+                pv.spawn_mode = Some(match sm.to_ascii_lowercase().as_str() {
+                    "pipe" => SpawnMode::Pipe,
+                    "pty" => SpawnMode::Pty,
+                    other => {
+                        errors.push(format!("spawn_mode.{p}：非法值 {other:?}（pipe / pty）"));
+                        continue;
+                    }
+                });
+            }
+        }
+        pv.term_interactive = v.term_interactive;
+        if !pv.is_empty() {
+            platform.insert(p, pv);
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     Ok(ServiceConfig {
         id: input.id.trim().to_string(),
         name: {
             let n = input.name.trim().to_string();
-            if n.is_empty() { input.id.trim().to_string() } else { n }
+            if n.is_empty() {
+                input.id.trim().to_string()
+            } else {
+                n
+            }
         },
         command,
         args,
@@ -117,10 +189,11 @@ fn build_service_config(input: &ServiceInput) -> Result<ServiceConfig, Vec<Strin
         env: input
             .env
             .iter()
-            .map(|e| traysupervisor_core::config::EnvEntry {
+            .map(|e| EnvEntry {
                 key: e.key.trim().to_string(),
                 value: e.value.clone(),
                 expand: e.expand,
+                platform: e.platform.clone(),
             })
             .collect(),
         redirect_stderr: input.redirect_stderr,
@@ -166,27 +239,69 @@ fn build_service_config(input: &ServiceInput) -> Result<ServiceConfig, Vec<Strin
                 max_items: m.max_items,
             })
             .collect(),
+        platform,
     })
+}
+
+/// 平台变体回显（DESIGN §4.7）：命令行重新 join 为单行（roundtrip 安全）。
+/// platform 名随行、以 Vec 下发——BTreeMap 经 serde-wasm-bindgen 反序列化到前端
+/// 曾丢字段（spawn_mode 等），IPC 双向统一 Vec（DEV-CONVENTIONS §2）
+#[derive(Debug, Clone, Serialize)]
+pub struct PlatformVariantOut {
+    pub platform: String,
+    pub command_line: String,
+    pub cwd: Option<String>,
+    pub spawn_mode: Option<String>,
+    pub term_interactive: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ServiceBriefOut {
     #[serde(flatten)]
     pub brief: traysupervisor_core::ServiceBrief,
-    /// 单行命令行（join §3.4 规则），编辑表单直接使用
+    /// 默认（基础）命令行单行（join §3.4 规则），编辑表单「默认」子页使用
     pub command_line: String,
+    /// 当前平台生效命令行（DESIGN §4.2）：托盘/编辑页「本机实际执行」提示用
+    pub effective_command_line: String,
+    /// 平台变体回显（含非本机平台，存盘无损）；Vec 下发理由同 PlatformVariantOut
+    pub platform: Vec<PlatformVariantOut>,
     /// 日志单文件上限的带单位展示值（如 `10MB`；未启用文件日志为空，FR-2.2 / D-16）
     pub log_max_bytes_text: String,
 }
 
+fn registry_of(state: &State<'_, AppState>) -> PlatformRegistry {
+    PlatformRegistry::new(&state.mgr.current_config().settings)
+}
+
+fn variant_out(platform: &str, v: &PlatformVariant) -> PlatformVariantOut {
+    PlatformVariantOut {
+        platform: platform.to_string(),
+        command_line: join_command_line(&v.command, &v.args),
+        cwd: v.directory.as_ref().map(|d| d.display().to_string()),
+        spawn_mode: v.spawn_mode.map(|m| m.as_str().to_string()),
+        term_interactive: v.term_interactive,
+    }
+}
+
 #[tauri::command]
 pub fn list_services(state: State<'_, AppState>) -> Vec<ServiceBriefOut> {
+    let reg = registry_of(&state);
     state
         .mgr
         .list()
         .into_iter()
         .map(|b| {
             let command_line = join_command_line(&b.config.command, &b.config.args);
+            let effective_command_line = {
+                let eff = b.config.resolve_for(&reg);
+                join_command_line(&eff.command, &eff.args)
+            };
+            let platform = b
+                .config
+                .platform
+                .iter()
+                .map(|(p, v)| variant_out(p, v))
+                .collect();
             let log_max_bytes_text = b
                 .config
                 .log
@@ -194,9 +309,60 @@ pub fn list_services(state: State<'_, AppState>) -> Vec<ServiceBriefOut> {
                 .as_ref()
                 .map(|f| traysupervisor_core::config::format_byte_size(f.max_bytes))
                 .unwrap_or_default();
-            ServiceBriefOut { brief: b, command_line, log_max_bytes_text }
+            ServiceBriefOut {
+                brief: b,
+                command_line,
+                effective_command_line,
+                platform,
+                log_max_bytes_text,
+            }
         })
         .collect()
+}
+
+/// 粘贴整行解析（FR-2.12 / DESIGN §3）：前缀 KEY=VALUE → 环境变量，其余为命令行
+#[derive(Debug, Clone, Serialize)]
+pub struct PastedLineOut {
+    pub env: Vec<EnvEntry>,
+    pub command_line: String,
+}
+
+#[tauri::command]
+pub fn parse_pasted_line(line: String) -> Result<PastedLineOut, String> {
+    let (env, command_line) = split_env_prefixed_line(&line)?;
+    Ok(PastedLineOut { env, command_line })
+}
+
+/// 平台注册表信息（DESIGN §4.7）：UI 平台下拉选项、「本机」角标与解析链提示
+#[derive(Debug, Clone, Serialize)]
+pub struct PlatformInfoOut {
+    pub native_os: String,
+    pub platforms: Vec<PlatformDef>,
+    pub current: Option<String>,
+    pub chain: Vec<String>,
+}
+
+#[tauri::command]
+pub fn get_platform_info(state: State<'_, AppState>) -> PlatformInfoOut {
+    let settings = state.mgr.current_config().settings;
+    let reg = PlatformRegistry::new(&settings);
+    PlatformInfoOut {
+        native_os: traysupervisor_core::config::native_os().to_string(),
+        platforms: reg
+            .all_names()
+            .into_iter()
+            .map(|name| {
+                let family = settings
+                    .platforms
+                    .iter()
+                    .find(|d| d.name == name)
+                    .and_then(|d| d.family.clone());
+                PlatformDef { name, family }
+            })
+            .collect(),
+        current: settings.current_platform,
+        chain: reg.chain(),
+    }
 }
 
 #[tauri::command]
@@ -219,8 +385,7 @@ pub fn upsert_service(state: State<'_, AppState>, input: ServiceInput) -> Result
 
     // 写文件 → GUI 保存语义（SRS FR-2.10）：应用配置但不自动重启运行中服务，
     // 重启由前端"需重启生效"提示显式触发（HLD D-10）
-    traysupervisor_core::config::save_app_config(&cfg, mgr.config_path())
-        .map_err(|e| vec![e])?;
+    traysupervisor_core::config::save_app_config(&cfg, mgr.config_path()).map_err(|e| vec![e])?;
     mgr.apply_saved_config().map(|_| ())
 }
 
@@ -233,8 +398,7 @@ pub fn delete_service(state: State<'_, AppState>, id: String) -> Result<(), Vec<
     if cfg.services.len() == before {
         return Err(vec![format!("服务 {id} 不存在")]);
     }
-    traysupervisor_core::config::save_app_config(&cfg, mgr.config_path())
-        .map_err(|e| vec![e])?;
+    traysupervisor_core::config::save_app_config(&cfg, mgr.config_path()).map_err(|e| vec![e])?;
     mgr.reload_from_file().map(|_| ())
 }
 
@@ -279,13 +443,17 @@ pub fn open_match_url(
 }
 
 /// env 展开预览（编辑页「预览」按钮）；
-/// 与实际 spawn 环境一致：未显式配置 PATH 时展示运行时注入的兜底 PATH
+/// 与实际 spawn 环境一致：先按平台标签过滤合并（DESIGN §4.3），再展开；
+/// 未显式配置 PATH 时展示运行时注入的兜底 PATH
 #[tauri::command]
 pub fn get_env_resolved_preview(
+    state: State<'_, AppState>,
     input: ServiceInput,
 ) -> Result<BTreeMap<String, String>, String> {
     let svc = build_service_config(&input).map_err(|e| e.join("\n"))?;
-    let mut env = traysupervisor_core::config::resolve_env(&svc.env, &system_var)
+    let reg = registry_of(&state);
+    let eff = svc.resolve_for(&reg);
+    let mut env = traysupervisor_core::config::resolve_env(&eff.env, &system_var)
         .map_err(|errs| errs.join("\n"))?;
     traysupervisor_core::service::shellenv::inject_fallback_path(&mut env);
     Ok(env)
@@ -305,7 +473,9 @@ pub fn reload_config(
         traysupervisor_core::service::ReloadMode::Reread => {
             let cfg = traysupervisor_core::config::load_app_config(state.mgr.config_path())
                 .map_err(|e| vec![e])?;
-            state.mgr.reload(cfg, traysupervisor_core::service::ReloadMode::Reread)
+            state
+                .mgr
+                .reload(cfg, traysupervisor_core::service::ReloadMode::Reread)
         }
         traysupervisor_core::service::ReloadMode::Update => state.mgr.reload_from_file(),
     }
@@ -323,7 +493,11 @@ pub fn write_stdin(state: State<'_, AppState>, id: String, data: Vec<u8>) -> Res
 }
 
 #[tauri::command]
-pub fn open_log_dir(app: tauri::AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub fn open_log_dir(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
     // 查找服务的日志文件路径（未配置则提示）
     let log_path = state
         .mgr

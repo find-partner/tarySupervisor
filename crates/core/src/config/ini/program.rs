@@ -1,14 +1,28 @@
-//! [program:<id>] 节解析：字段映射、日志策略、matcher.N 编号键（CONFIG-SPEC §5）。
+//! [program:<id>] 节解析：字段映射、日志策略、matcher.N 编号键（CONFIG-SPEC §5）、
+//! 平台变体键（FR-2.13 / DESIGN §4.2）。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::parse::{parse_bool, parse_u32, parse_u64, prop_get, Props};
-use crate::config::{
-    Autorestart, LogFilePolicy, LogPolicy, MatcherConfig, ServiceConfig, SpawnMode,
-};
 use crate::config::parse_environment;
+use crate::config::{
+    Autorestart, LogFilePolicy, LogPolicy, MatcherConfig, PlatformVariant, ServiceConfig, SpawnMode,
+};
 use crate::expand_tilde;
+
+/// 平台变体键判定（FR-2.13）：`command.<平台>` / `directory.<平台>` /
+/// `spawn_mode.<平台>` / `term_interactive.<平台>`，后缀非空且不含第二个 '.'。
+/// 后缀的注册表成员关系由 validate_app 复核（全局节可能在服务节之后，解析期不查）。
+pub(super) fn is_variant_key(k: &str) -> bool {
+    matches!(
+        k.split_once('.'),
+        Some((base, rest))
+            if !rest.is_empty()
+                && !rest.contains('.')
+                && matches!(base, "command" | "directory" | "spawn_mode" | "term_interactive")
+    )
+}
 
 pub(super) fn parse_program(
     id: &str,
@@ -67,7 +81,11 @@ pub(super) fn parse_program(
         svc.spawn_mode = match v.trim() {
             "pipe" => SpawnMode::Pipe,
             "pty" => SpawnMode::Pty,
-            other => return Err(format!("[{section_name}] spawn_mode：非法值 {other:?}（pipe / pty）")),
+            other => {
+                return Err(format!(
+                    "[{section_name}] spawn_mode：非法值 {other:?}（pipe / pty）"
+                ))
+            }
         };
     }
     if let Some(v) = get("shell") {
@@ -85,8 +103,51 @@ pub(super) fn parse_program(
 
     parse_log_policy(props, base_dir, section_name, &mut svc)?;
     svc.matchers = parse_matchers(props, section_name)?;
+    svc.platform = parse_platform_variants(props, section_name)?;
 
     Ok(svc)
+}
+
+/// 平台变体键解析（FR-2.13 / DESIGN §4.2）：`command.<平台>` 等四个基础键的后缀形式。
+/// 值语义与对应基础键完全一致；全空变体不落表。
+fn parse_platform_variants(
+    props: Props<'_>,
+    section_name: &str,
+) -> Result<BTreeMap<String, PlatformVariant>, String> {
+    let mut map: BTreeMap<String, PlatformVariant> = BTreeMap::new();
+    for (k, v) in props.iter() {
+        if !is_variant_key(k) {
+            continue;
+        }
+        let (base, platform) = k.split_once('.').expect("is_variant_key 已保证含 '.'");
+        let loc = format!("[{section_name}] {k}");
+        let entry = map.entry(platform.to_string()).or_default();
+        match base {
+            "command" => {
+                let (prog, args) =
+                    crate::config::split_command_line(v).map_err(|e| format!("{loc}：{e}"))?;
+                entry.command = prog;
+                entry.args = args;
+            }
+            "directory" => {
+                let t = v.trim();
+                entry.directory = (!t.is_empty()).then(|| expand_tilde(t));
+            }
+            "spawn_mode" => {
+                entry.spawn_mode = Some(match v.trim() {
+                    "pipe" => SpawnMode::Pipe,
+                    "pty" => SpawnMode::Pty,
+                    other => return Err(format!("{loc}：非法值 {other:?}（pipe / pty）")),
+                });
+            }
+            "term_interactive" => {
+                entry.term_interactive = Some(parse_bool(v, &loc)?);
+            }
+            _ => unreachable!("is_variant_key 已限定 base"),
+        }
+    }
+    map.retain(|_, v| !v.is_empty());
+    Ok(map)
 }
 
 /// 日志文件策略（stdout_logfile / maxbytes / backups / compress）
@@ -97,7 +158,9 @@ fn parse_log_policy(
     svc: &mut ServiceConfig,
 ) -> Result<(), String> {
     let get = |key: &str| prop_get(props, key);
-    let logfile = get("stdout_logfile").map(str::trim).filter(|s| !s.is_empty());
+    let logfile = get("stdout_logfile")
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if let Some(lf) = logfile {
         let path = resolve_log_path(lf, base_dir);
         let max_bytes = match get("stdout_logfile_maxbytes") {
@@ -115,7 +178,12 @@ fn parse_log_policy(
             None => false,
         };
         svc.log = LogPolicy {
-            file: Some(LogFilePolicy { path, max_bytes, max_files, compress }),
+            file: Some(LogFilePolicy {
+                path,
+                max_bytes,
+                max_files,
+                compress,
+            }),
         };
     } else if get("stdout_logfile_maxbytes").is_some()
         || get("stdout_logfile_backups").is_some()
@@ -132,9 +200,22 @@ fn parse_log_policy(
 fn parse_matchers(props: Props<'_>, section_name: &str) -> Result<Vec<MatcherConfig>, String> {
     // 未知键检测（CONFIG-SPEC §1/§7.7）：先收集 matcher.*，其余必须命中已知键
     const KNOWN_KEYS: &[&str] = &[
-        "name", "command", "directory", "autostart", "autorestart", "startsecs", "startretries",
-        "stopwaitsecs", "environment", "redirect_stderr", "stdout_logfile", "term_interactive",
-        "stdout_logfile_maxbytes", "stdout_logfile_backups", "spawn_mode", "logfile_compress",
+        "name",
+        "command",
+        "directory",
+        "autostart",
+        "autorestart",
+        "startsecs",
+        "startretries",
+        "stopwaitsecs",
+        "environment",
+        "redirect_stderr",
+        "stdout_logfile",
+        "term_interactive",
+        "stdout_logfile_maxbytes",
+        "stdout_logfile_backups",
+        "spawn_mode",
+        "logfile_compress",
         "shell",
     ];
     let mut matcher_raw: BTreeMap<u32, (Option<String>, Option<String>, Option<u32>)> =
@@ -142,7 +223,9 @@ fn parse_matchers(props: Props<'_>, section_name: &str) -> Result<Vec<MatcherCon
     for (k, v) in props.iter() {
         if let Some(rest) = k.strip_prefix("matcher.") {
             let Some((num, field)) = rest.split_once('.') else {
-                return Err(format!("[{section_name}] 非法的 matcher 键 {k}（应为 matcher.N.pattern 等）"));
+                return Err(format!(
+                    "[{section_name}] 非法的 matcher 键 {k}（应为 matcher.N.pattern 等）"
+                ));
             };
             let n: u32 = num
                 .parse()
@@ -152,13 +235,16 @@ fn parse_matchers(props: Props<'_>, section_name: &str) -> Result<Vec<MatcherCon
                 "pattern" => entry.0 = Some(v.to_string()),
                 "template" => entry.1 = Some(v.to_string()),
                 "max_items" => {
-                    entry.2 = Some(parse_u32(v, &format!("[{section_name}] matcher.{n}.max_items"))?)
+                    entry.2 = Some(parse_u32(
+                        v,
+                        &format!("[{section_name}] matcher.{n}.max_items"),
+                    )?)
                 }
                 other => return Err(format!("[{section_name}] matcher.{n}：未知字段 {other}")),
             }
             continue;
         }
-        if !KNOWN_KEYS.contains(&k.as_str()) {
+        if !is_variant_key(&k) && !KNOWN_KEYS.contains(&k.as_str()) {
             return Err(format!("[{section_name}] 未知键 {k}"));
         }
     }

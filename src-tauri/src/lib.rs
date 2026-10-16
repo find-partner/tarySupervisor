@@ -70,10 +70,9 @@ pub fn run() {
                                 return;
                             }
                         };
-                        for sig in signals.forever() {
+                        if let Some(sig) = signals.forever().next() {
                             log::info!("收到信号 {sig}，执行退出流程（停止全部服务）…");
                             sig_app.exit(0);
-                            break;
                         }
                     })
                     .ok();
@@ -92,6 +91,8 @@ pub fn run() {
             commands::get_log,
             commands::open_match_url,
             commands::get_env_resolved_preview,
+            commands::parse_pasted_line,
+            commands::get_platform_info,
             commands::reload_config,
             commands::term_snapshot,
             commands::write_stdin,

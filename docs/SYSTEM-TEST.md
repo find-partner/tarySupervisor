@@ -2,8 +2,8 @@
 
 | 项目 | 内容 |
 |------|------|
-| 版本 | v0.2（与 SRS v0.4 / MVP 实现同步） |
-| 日期 | 2026-10-05 |
+| 版本 | v0.3（与 SRS v0.5 同步） |
+| 日期 | 2026-10-06 |
 | 依据 | [SRS](./SRS.md) §7 验收与交付、[HLD](./HLD.md) §8 测试策略 |
 | 范围 | MVP（P0）：FR-1 ~ FR-6 及相关 NFR |
 | 状态 | 自动化部分（A1~A4）已在本机通过；三平台手动矩阵（ST）待执行 |
@@ -14,7 +14,7 @@
 
 | 层级 | 内容 | 执行方式 | 位置 |
 |------|------|----------|------|
-| L1 单元 | 配置解析/校验/env 展开/大小单位/轮转/Matcher/vte 序列/命令行切分 | `cargo test -p traysupervisor-core --lib` | `crates/core/src/**`（73 个） |
+| L1 单元 | 配置解析/校验/env 展开/大小单位/轮转/Matcher/vte 序列/命令行切分/粘贴解析/平台解析链与合并 | `cargo test -p traysupervisor-core --lib` | `crates/core/src/**`（104 个） |
 | L2 集成 | 真实进程 spawn/停止/自动重启/PTY/热加载（Unix） | `cargo test -p traysupervisor-core` | `crates/core/tests/service_tests.rs`（11 个） |
 | L3 系统·脚本化 | 托盘应用整体行为（进程、文件、信号、菜单就地更新） | `scripts/smoke-unix.sh`（S-01~S-05）/ `scripts/smoke-windows.ps1`（S-06~S-08） | `scripts/` |
 | L4 系统·手动 GUI | 托盘菜单交互、窗口渲染、对话框 | 人工按 §5 用例（ST-01~ST-22）执行 | 本文记录表 |
@@ -27,7 +27,7 @@
 
 | 编号 | 执行 | 覆盖的 SRS 验收点 |
 |------|------|-------------------|
-| A1 | `cargo test -p traysupervisor-core --lib`（73 单元） | FR-2.4（校验/切分/展开）、FR-2.2（大小单位 parse/format）、FR-4.2/4.3（环形缓冲/轮转/截断）、FR-5.1/5.2/5.4/5.6（匹配/去重/LRU/URL 白名单）、FR-6.1（vte 序列）、§3.4 INI 语义 |
+| A1 | `cargo test -p traysupervisor-core --lib`（104 单元） | FR-2.4（校验/切分/展开）、FR-2.2（大小单位 parse/format）、FR-4.2/4.3（环形缓冲/轮转/截断）、FR-5.1/5.2/5.4/5.6（匹配/去重/LRU/URL 白名单）、FR-6.1（vte 序列）、§3.4 INI 语义、FR-2.12（粘贴解析）、FR-2.13（解析链/env 标签合并/往返/diff） |
 | A2 | `cargo test -p traysupervisor-core`（含 11 集成，Unix） | FR-3.1~3.4（状态机/停止/重启/BACKOFF/FATAL）、FR-2.3（子进程 env）、FR-5.2/5.3/5.5（URL 预设规则提取/重启清空）、FR-6.2（PTY 捕获+快照）、FR-2.6（热载 diff） |
 | A3 | `scripts/smoke-unix.sh`（macOS/Linux，8 项断言） | S-01：FR-2.1 autostart + FR-3.7 信号退出清理；S-02：FR-4.3 轮转（100KB×3 缩减版，顺带覆盖 maxbytes 单位解析）；S-03：FR-2.6 热加载 applied/沿用；S-04：NFR-5 权限 0600；S-05：FR-1.6 就地更新（状态扰动期零重建） |
 | A4 | `scripts/smoke-windows.ps1`（Windows） | S-06：FR-3 树杀（cmd→ping 孙进程）+ KILL_ON_JOB_CLOSE 硬杀兜底；S-07：FR-2.6 热加载；S-08：配置文件存在性 |
@@ -46,6 +46,16 @@
 | Linux | Ubuntu 24.04 | GNOME（装 AppIndicator 扩展）与 KDE 各测一轮 | WebKitGTK 4.1 系统库 |
 
 构建：`cargo build -p traysupervisor`（debug 即可）；如需 GUI 窗口渲染则 `trunk build` 后用 release 或先起 `trunk serve`。
+
+### 3.1 最低系统版本与发布产物（release.yml）
+
+| 平台 | 最低版本 | 发布产物 | 依据 |
+|------|---------|---------|------|
+| Windows | **10 x64**（Win7/8 不支持） | msi + nsis 安装器 | Rust ≥1.78 的 Windows 目标最低 Win10；WebView2 运行时对 Win7/8 的支持已于 2023-01 终止（最后版本 109 固定版，无安全更新）；Tauri v2 / windows-sys 0.59 无 Win7 官方支持。如确需 Win7 须降级 Tauri v1 + Rust ≤1.77 工具链，属产品级决策，不做承诺 |
+| macOS | **10.13+**（12 完全覆盖） | universal dmg（Intel + Apple Silicon） | release 构建设置 `MACOSX_DEPLOYMENT_TARGET=10.13`（Tauri v2 最低要求）；Apple Silicon 最低 11。发布产物在 macos-14 runner 构建，低版本系统按部署目标兼容 |
+| Linux | glibc 较新发行版（Ubuntu 24.04 基线） | deb + AppImage | WebKitGTK 4.1 运行时 |
+
+产物由 `git tag vX.Y.Z && git push origin vX.Y.Z` 触发 release.yml 自动构建并附到 GitHub Release；未打 tag 前不会出现任何 Release 结果（此前仓库无 tag 亦无发布 job，故 Release 页为空）。
 
 ## 4. 脚本化用例（L3）
 
@@ -153,6 +163,15 @@
 - **ST-22 日志大小单位（FR-2.2 / D-16 验收）**
   步骤：① 日志页单文件上限填 `10MB` 保存，检查 config.ini ② 手写 `stdout_logfile_maxbytes=512KB` 热加载 ③ 填入 `abc` 或 `10TB` 保存。
   预期：① INI 回写 `stdout_logfile_maxbytes=10MB` ② 合法加载生效 ③ 保存被拦截并逐项报错。
+- **ST-23 命令行粘贴解析（FR-2.12 验收）**
+  步骤：① 新建服务第①步，向命令行框粘贴 `ENABLE_CORS=true USE_PROXY=true PROXY_URL=http://127.0.0.1:7890 open-websearch --port=1123` ② 在编辑页粘贴无前缀变量的普通命令 ③ 粘贴仅 `FOO=bar`（无程序）④ 手改命令行后点「解析」。
+  预期：① 自动拆分：环境变量表出现 3 行（全部平台）、命令行变为 `open-websearch --port=1123`，并提示「已识别 3 个前缀环境变量」② 原样插入不拆分 ③ 提示「缺少命令」且输入不变 ④ 重新解析成功。
+- **ST-24 平台变体与跨平台同步（FR-2.13 验收）**
+  步骤：① 编辑页「基础配置 → 平台变体」为 Windows 子页填命令行 `C:\tools\app.exe --port=1123`、工作目录、捕获模式保存，检查 config.ini ② 平台环境变量表为某行选「windows」并填平台路径，保存后检查 INI `@windows` 标签 ③ 修改 Windows 变体保存，观察本机运行中服务的重启提示 ④ 修改「默认命令行」保存。
+  预期：① INI 出现 `command.windows=…` 等键且编辑回显完整 ② INI 出现 `KEY="…"@windows` ③ 非 Windows 平台无重启提示（生效值不变）④ 出现「需重启生效」提示；「本机」角标与解析链提示正确。
+- **ST-25 当前平台声明（FR-2.13 验收）**
+  步骤：① 全局节手写 `platforms=home-mac:macos, build-box` 与 `current_platform=home-mac`，保存触发热载 ② 设置页观察解析链提示与平台下拉选项 ③ 为 `home-mac` 配命令行变体后启动服务，对比 `ps` 实际进程 ④ 手写 `current_platform=ghost`。
+  预期：① 热载成功 ② 平台列/变体子标签出现自定义平台且 home-mac 带「本机」角标 ③ 实际拉起 home-mac 变体命令 ④ 校验失败横幅提示 current_platform 未注册。
 
 ## 6. 结果记录矩阵
 
@@ -180,6 +199,9 @@
 | ST-20 编辑页操作栏 | ☐ | ☐ | ☐ | ☐ |
 | ST-21 三处状态一致 | ☐ | ☐ | ☐ | ☐ |
 | ST-22 日志大小单位 | ☐ | ☐ | ☐ | ☐ |
+| ST-23 粘贴解析 | ☐ | ☐ | ☐ | ☐ |
+| ST-24 平台变体与同步 | ☐ | ☐ | ☐ | ☐ |
+| ST-25 当前平台声明 | ☐ | ☐ | ☐ | ☐ |
 
 脚本化用例记录：S-01~S-05（macOS 本机 2026-10-03 全过，8/8 断言）；S-06~S-08 待 Windows 真机。
 CI：A5 待仓库接入 GitHub Actions 后首次运行确认。

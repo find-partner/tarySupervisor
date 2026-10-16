@@ -1,79 +1,81 @@
-//! 表格式标签页：环境变量（FR-2.3）、日志（轮转策略）、快捷项（FR-5 Matcher）。
+//! 表格式标签页：启动策略（DESIGN §2 ②）、日志（含 redirect_stderr）、快捷项（FR-5）。
+//! 环境变量表已并入「基础配置」页（basic.rs 复用 env_table）。
 
 use leptos::*;
 
-use crate::dto::{EnvEntry, MatcherConfig};
+use crate::dto::{MatcherConfig, PlatformInfoDto};
 
 use super::form::{set_form_value, FormState};
 
-pub fn env_panel(
-    form: RwSignal<FormState>,
-    dirty: RwSignal<Vec<bool>>,
-    on_preview: impl Fn(()) + Copy + 'static,
-) -> impl IntoView {
+/// 启动策略（DESIGN §2 ②）：supervisor 如何对待进程——全平台共用
+pub fn strategy_panel(form: RwSignal<FormState>, dirty: RwSignal<Vec<bool>>) -> impl IntoView {
     let mark1 = move || dirty.update(|d| d[1] = true);
-    let add_row = move |_| {
-        form.update(|f| f.env.push(EnvEntry { key: String::new(), value: String::new(), expand: false }));
-        mark1();
-    };
     view! {
-        <div class="hint" style="margin:0 0 8px;">"按书写顺序注入；勾选「替换」后值中的 ${VAR} 先查本表在前条目、再查系统环境（FR-2.3）"</div>
-        <table class="kv">
-            <thead>
-                <tr><th>"Key"</th><th>"Value"</th><th>"替换"</th><th></th></tr>
-            </thead>
-            <tbody>
-                {move || {
-                    form.get().env.iter().enumerate().map(|(i, _)| {
-                        let rm = move |_| {
-                            form.update(|f| { f.env.remove(i); });
-                            mark1();
-                        };
-                        view! {
-                            <tr>
-                                <td><input type="text"
-                                    prop:value=move || form.get().env.get(i).map(|e| e.key.clone()).unwrap_or_default()
-                                    on:input=move |e| {
-                                        let v = event_target_value(&e);
-                                        form.update(|f| { if let Some(en) = f.env.get_mut(i) { en.key = v; } });
-                                        mark1();
-                                    } /></td>
-                                <td><input type="text"
-                                    prop:value=move || form.get().env.get(i).map(|e| e.value.clone()).unwrap_or_default()
-                                    on:input=move |e| {
-                                        let v = event_target_value(&e);
-                                        form.update(|f| { if let Some(en) = f.env.get_mut(i) { en.value = v; } });
-                                        mark1();
-                                    } /></td>
-                                <td class="center"><input type="checkbox"
-                                    prop:checked=move || form.get().env.get(i).map(|e| e.expand).unwrap_or(false)
-                                    on:change=move |e| {
-                                        let v = event_target_checked(&e);
-                                        form.update(|f| { if let Some(en) = f.env.get_mut(i) { en.expand = v; } });
-                                        mark1();
-                                    } /></td>
-                                <td class="center"><button class="danger" on:click=rm>"删除"</button></td>
-                            </tr>
-                        }
-                    }).collect::<Vec<_>>()
-                }}
-            </tbody>
-        </table>
-        <div style="margin-top:6px">
-            <button on:click=add_row>"添加一行"</button>
-            <button on:click=move |_| on_preview(())>"预览展开结果"</button>
+        <div class="field-grid">
+            <label>"autostart"</label>
+            <label style="display:flex;gap:6px;align-items:center;color:var(--fg)">
+                <input type="checkbox" prop:checked=move || form.get().autostart
+                    on:change=move |e| {
+                        let v = event_target_checked(&e);
+                        set_form_value(form, move |f| f.autostart = v);
+                        mark1();
+                    } />
+                "应用启动时自动启动"
+            </label>
+            <label>"autorestart"</label>
+            <select on:change=move |e| {
+                    let v = event_target_value(&e);
+                    set_form_value(form, move |f| f.autorestart = v);
+                    mark1();
+                }
+                prop:value=move || form.get().autorestart.clone()>
+                <option value="No">"no（不自动重启）"</option>
+                <option value="OnFailure">"on-failure（异常退出时重启）"</option>
+                <option value="Always">"always（总是重启）"</option>
+            </select>
+            <label>"startsecs"</label>
+            <input type="number" min="0" prop:value=move || form.get().startsecs.clone()
+                on:input=move |e| {
+                    let v = event_target_value(&e);
+                    set_form_value(form, move |f| f.startsecs = v);
+                    mark1();
+                } />
+            <span class="hint">"进程存活超过该秒数（或产生首行输出）判定为运行中（默认 3）"</span>
+            <label>"startretries"</label>
+            <input type="number" min="0" max="10" prop:value=move || form.get().startretries.clone()
+                on:input=move |e| {
+                    let v = event_target_value(&e);
+                    set_form_value(form, move |f| f.startretries = v);
+                    mark1();
+                } />
+            <span class="hint">"启动重试次数上限，耗尽进入 FATAL（默认 5）"</span>
+            <label>"stopwaitsecs"</label>
+            <input type="number" min="1" prop:value=move || form.get().stopwaitsecs.clone()
+                on:input=move |e| {
+                    let v = event_target_value(&e);
+                    set_form_value(form, move |f| f.stopwaitsecs = v);
+                    mark1();
+                } />
+            <span class="hint">"优雅停止等待秒数，超时强杀整个进程树（默认 10）"</span>
         </div>
     }
 }
 
-/// GUI 空路径时的内置默认路径前缀（保存时后端 expand_tilde 展开为绝对路径；
-/// 与 crates/core default_log_path / CONFIG-SPEC §1 配置目录约定保持同步）
-const DEFAULT_LOG_DIR: &str = "~/.traysupervisor/logs";
-
+/// 日志页（DESIGN §2 ③）：redirect_stderr（决定日志里有几路流）+ 文件落盘策略
 pub fn log_panel(form: RwSignal<FormState>, dirty: RwSignal<Vec<bool>>) -> impl IntoView {
     let mark2 = move || dirty.update(|d| d[2] = true);
     view! {
         <div class="field-grid">
+            <label>"redirect_stderr"</label>
+            <label style="display:flex;gap:6px;align-items:center;color:var(--fg)">
+                <input type="checkbox" prop:checked=move || form.get().redirect_stderr
+                    on:change=move |e| {
+                        let v = event_target_checked(&e);
+                        set_form_value(form, move |f| f.redirect_stderr = v);
+                        mark2();
+                    } />
+                "stderr 并入 stdout 单流"
+            </label>
             <label>"写入文件"</label>
             <label style="display:flex;gap:6px;align-items:center;color:var(--fg)">
                 <input type="checkbox" prop:checked=move || form.get().log_enabled
@@ -83,7 +85,7 @@ pub fn log_panel(form: RwSignal<FormState>, dirty: RwSignal<Vec<bool>>) -> impl 
                             f.log_enabled = v;
                             // 勾选启用且路径为空 → 直接生成内置默认路径（清空后保存则由后端兜底生成）
                             if v && f.log_path.trim().is_empty() && !f.id.trim().is_empty() {
-                                f.log_path = format!("{DEFAULT_LOG_DIR}/{}.log", f.id.trim());
+                                f.log_path = format!("~/.traysupervisor/logs/{}.log", f.id.trim());
                             }
                         });
                         mark2();
@@ -128,9 +130,13 @@ pub fn log_panel(form: RwSignal<FormState>, dirty: RwSignal<Vec<bool>>) -> impl 
 pub fn matcher_panel(form: RwSignal<FormState>, dirty: RwSignal<Vec<bool>>) -> impl IntoView {
     let mark3 = move || dirty.update(|d| d[3] = true);
     let add_m = move |_| {
-        form.update(|f| f.matchers.push(MatcherConfig {
-            pattern: String::new(), template: "🌐 打开 {0}".into(), max_items: 5,
-        }));
+        form.update(|f| {
+            f.matchers.push(MatcherConfig {
+                pattern: String::new(),
+                template: "🌐 打开 {0}".into(),
+                max_items: 5,
+            })
+        });
         mark3();
     };
     view! {
@@ -179,5 +185,15 @@ pub fn matcher_panel(form: RwSignal<FormState>, dirty: RwSignal<Vec<bool>>) -> i
         <div style="margin-top:6px">
             <button on:click=add_m>"添加 Matcher"</button>
         </div>
+    }
+}
+
+/// 平台注册表平台名列表（信号驱动；注册表未加载时回退内置三项）
+pub fn registry_platforms(info: RwSignal<PlatformInfoDto>) -> Vec<String> {
+    let v = info.get();
+    if v.platforms.is_empty() {
+        vec!["windows".into(), "macos".into(), "linux".into()]
+    } else {
+        v.platforms.into_iter().map(|p| p.name).collect()
     }
 }

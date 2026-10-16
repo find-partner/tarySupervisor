@@ -3,7 +3,7 @@
 | 项目 | 内容 |
 |------|------|
 | 产品名称 | TraySupervisor（暂定名） |
-| 版本 | v0.4（草案） |
+| 版本 | v0.5（与 SRS v0.5 / CONFIG-SPEC v0.5 同步） |
 | 日期 | 2026-10-05 |
 | 依据 | [软件需求规格说明书（SRS）](./SRS.md) |
 | 配套文档 | [配置文件规范（CONFIG-SPEC）](./CONFIG-SPEC.md)、[命令行工具规格（CLI-SPEC）](./CLI-SPEC.md) |
@@ -91,29 +91,45 @@ pub struct AppConfig {
 pub struct ServiceConfig {
     pub id: String,                      // slug，唯一
     pub name: String,
-    pub command: String,
+    pub command: String,                 // 默认命令行（程序）
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
-    pub env: Vec<EnvEntry>,              // 有序，支持条目间引用
+    pub env: Vec<EnvEntry>,              // 有序，支持条目间引用与行级平台标签
     pub autostart: bool,
     pub autorestart: Autorestart,        // No | OnFailure | Always
     pub stop_timeout_secs: u64,          // 默认 10
-    pub spawn_mode: SpawnMode,           // Pipe | Pty
+    pub spawn_mode: SpawnMode,           // Pipe | Pty（默认捕获模式）
     pub term_interactive: bool,          // 终端视图可写（交互，默认 false；仅 Pty 有效，SRS FR-6.4）
     pub log: LogPolicy,
     pub matchers: Vec<MatcherConfig>,
+    pub platform: BTreeMap<String, PlatformVariant>,  // 平台变体（FR-2.13），键 ∈ 注册表
 }
 
 pub struct EnvEntry {
     pub key: String,
     pub value: String,
     pub expand: bool,                    // false：字面量直传（默认）
+    pub platform: Option<String>,        // 行级平台标签：None = 全部平台（FR-2.13）
 }
+
+/// 平台变体（FR-2.13 / DESIGN §4.2）：基础配置页字段的平台覆盖
+pub struct PlatformVariant {
+    pub command: String,                 // 空 = 未覆盖（args 同时为空）
+    pub args: Vec<String>,
+    pub directory: Option<PathBuf>,
+    pub spawn_mode: Option<SpawnMode>,
+    pub term_interactive: Option<bool>,
+}
+
+/// 平台注册表（DESIGN §4.1）：内置 windows/macos/linux + 全局声明自定义平台；
+/// chain() = [current_platform] + [OS 家族] + [自动检测 OS]，变体沿链取第一个命中
+pub struct PlatformRegistry { /* custom: Vec<PlatformDef>, current: Option<String> */ }
 ```
 
 职责：
 - 加载 / 保存 supervisord 风格 INI（编解码层 `rust-ini` → 语义模型，规范见 [CONFIG-SPEC](./CONFIG-SPEC.md)）；**保存前校验**（命令可解析、正则可编译、env UTF-8、`${VAR}` 引用按顺序可解析且无环）。
 - **展开函数** `resolve_env(&ServiceConfig) -> Result<BTreeMap<OsString, OsString>>`：按表顺序构建，`expand=true` 的条目以"当前已构建 map + 系统环境"为上下文执行替换；未定义变量返回错误。
+- **平台解析**（FR-2.13）：`resolve_for(&PlatformRegistry) -> ServiceConfig` 把平台变体折叠进基础字段并按行级标签过滤合并 env（同名键平台条目就地覆盖）；manager 在把配置交给监督任务前完成解析，原始配置（含全部变体）保留供存盘与编辑回显；`diff_configs` 对新旧配置各自按其解析链比较生效值——改其他平台的变体不触发本机重启。
 - 热加载：`notify` 监听文件变更 → 重新加载 → 与运行态 diff → 产出 `ConfigDelta { added, removed, changed }`，由 service 管理器应用（未受影响的服务不重启）。
 
 ### 3.2 `core::service` — 进程管理器
@@ -229,7 +245,9 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 | `open_log_window` / `open_term_window` | `id` | 打开（或聚焦）该服务的日志窗口 / 终端视图窗口（托盘菜单与编辑页操作栏共用入口） |
 | `get_log` | `id, since_index, limit` | `Vec<LogLine>`（历史回放，滚动加载用） |
 | `open_match_url` | `svc_id, hash` | 校验 http/https 后 `tauri-plugin-opener` 打开 |
-| `get_env_resolved_preview` | `ServiceConfig` | 展开后的 env 预览（编辑页"预览"按钮） |
+| `get_env_resolved_preview` | `ServiceConfig` | 展开后的 env 预览（按当前平台解析链过滤合并后展开；编辑页"预览"按钮） |
+| `parse_pasted_line` | `line: String` | `PastedLine { env: Vec<EnvEntry>, command_line: String }`（FR-2.12 粘贴解析，core 纯函数） |
+| `get_platform_info` | — | `PlatformInfo { native_os, platforms: Vec<PlatformDef>, current, chain }`（平台下拉选项/本机角标/解析链提示，FR-2.13） |
 | `reload_config` | `mode: reread \| update` | `ConfigDelta`（reread 仅报告差异；update 应用差异，语义见 [CLI-SPEC](./CLI-SPEC.md)） |
 | `shutdown` | — | 触发退出流程（FR-1.8：逐个停止运行中服务后退出） |
 | `write_stdin` | `id, data: Vec<u8>` | 转发至 PTY master（`term_interactive` 服务；非 Pty/未运行报错） |

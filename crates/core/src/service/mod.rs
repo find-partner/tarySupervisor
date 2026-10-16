@@ -17,9 +17,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::{mpsc, watch};
 
 use crate::config::{AppConfig, GlobalSettings, ServiceConfig};
-use crate::events::{
-    CoreEvent, EventBus, MatchItem, StateInfo, StopReason, Stream, SvcState,
-};
+use crate::events::{CoreEvent, EventBus, MatchItem, StateInfo, StopReason, Stream, SvcState};
 use crate::log::LogStore;
 use crate::matcher::MatcherState;
 use crate::term::TermHandle;
@@ -126,7 +124,12 @@ impl ServiceManager {
         let mgr = Arc::new_cyclic(|weak: &std::sync::Weak<ServiceManager>| {
             // 配置文件热加载（FR-2.6）
             let watcher = crate::watcher::spawn(config_path.clone(), weak.clone());
-            ServiceManager { rt, shared, config_path, _watcher: Some(watcher) }
+            ServiceManager {
+                rt,
+                shared,
+                config_path,
+                _watcher: Some(watcher),
+            }
         });
 
         // 初始服务
@@ -159,6 +162,11 @@ impl ServiceManager {
     }
 
     fn create_service(shared: &Shared, handle: &tokio::runtime::Handle, cfg: &ServiceConfig) {
+        // 监督任务持有「按当前解析链解析后」的配置（DESIGN §4.2）：spawn 用生效值；
+        // 原始配置（含全部平台变体）保留在 shared.configs，供存盘与编辑回显。
+        // store/matcher 等平台无关字段两种形态取值相同。
+        let reg = crate::config::PlatformRegistry::new(&shared.settings.read().unwrap());
+        let cfg = cfg.resolve_for(&reg);
         let cap = shared.settings.read().unwrap().log_lines as usize;
         let store = match &cfg.log.file {
             Some(f) => match LogStore::new(cap, Some(f)) {
@@ -206,7 +214,10 @@ impl ServiceManager {
                     tokio::time::sleep(std::time::Duration::from_millis(66)).await;
                     if frame_term.has_dirty() {
                         let screen = frame_term.take_screen();
-                        frame_bus.send(CoreEvent::TermFrame { id: frame_id.clone(), screen });
+                        frame_bus.send(CoreEvent::TermFrame {
+                            id: frame_id.clone(),
+                            screen,
+                        });
                     }
                 }
             });
@@ -237,7 +248,11 @@ impl ServiceManager {
 
         shared.sups.write().unwrap().insert(
             cfg.id.clone(),
-            SupHandle { cmd_tx, cfg_tx, state_rx },
+            SupHandle {
+                cmd_tx,
+                cfg_tx,
+                state_rx,
+            },
         );
         shared.ctxs.write().unwrap().insert(cfg.id.clone(), ctx);
     }

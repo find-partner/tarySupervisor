@@ -1,14 +1,17 @@
 //! 编辑模式（FR-2.8 四标签页 + FR-2.10 保存后"需重启生效"提示 +
-//! FR-2.11 标签栏上方服务操作栏）。
+//! FR-2.11 标签栏上方服务操作栏）。分组见 DESIGN §2：
+//! 基础配置（含平台变体与环境变量）/ 启动策略 / 日志 / 快捷项。
 
 use leptos::*;
 
+use crate::dto::PlatformInfoDto;
+
 use super::basic::basic_panel;
 use super::ctrlbar::ctrl_bar;
-use super::panels::{env_panel, log_panel, matcher_panel};
 use super::form::FormState;
+use super::panels::{log_panel, matcher_panel, strategy_panel};
 
-const TAB_NAMES: [&str; 4] = ["基本设置", "环境变量", "日志", "快捷项"];
+const TAB_NAMES: [&str; 4] = ["基础配置", "启动策略", "日志", "快捷项"];
 
 #[allow(clippy::too_many_arguments)]
 pub fn edit_mode(
@@ -21,6 +24,7 @@ pub fn edit_mode(
     restart_hint: RwSignal<Option<(String, String)>>,
     selected_id: RwSignal<Option<String>>,
     ctrl_err: RwSignal<String>,
+    platform_info: RwSignal<PlatformInfoDto>,
     on_save_tab: impl Fn(usize) + Copy + 'static,
     on_restart: impl Fn(()) + Copy + 'static,
     on_delete: impl Fn(()) + Copy + 'static,
@@ -82,8 +86,8 @@ pub fn edit_mode(
         </div>
 
         {move || match tab.get() {
-            0 => basic_panel(form, dirty, false).into_view(),
-            1 => env_panel(form, dirty, on_preview).into_view(),
+            0 => basic_panel(form, dirty, false, true, platform_info, on_preview).into_view(),
+            1 => strategy_panel(form, dirty).into_view(),
             2 => log_panel(form, dirty).into_view(),
             _ => matcher_panel(form, dirty).into_view(),
         }}
