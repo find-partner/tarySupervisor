@@ -95,3 +95,13 @@ cargo check --workspace --all-targets          # 全量编译检查
 - 日志输出目标支持「仅内存 / 内存+文件」（CONFIG-SPEC 文件格式不表达「仅文件」）。
 - Matcher 无隐式内置规则：新建服务时默认预填内置 HTTP URL 规则（FR-5.3），删除后空配置即无快捷项；非 URL 命中项在菜单中显示为禁用。
 - `traysvctl` CLI（P1）、系统通知（P1）、开机自启（P2）、交互式终端（二期）未实现。
+
+## 许可证
+
+本项目采用 [PolyForm Noncommercial 1.0.0](./LICENSE) 协议：**任何非商业用途**（个人使用、学习、研究、修改、再分发）免费；**商业使用**（销售、付费服务、商业产品集成等）需获得版权人（find-partner）的单独商业授权。
+
+> 注意：按 OSI 定义这不是"开源"协议，而是"源码可得"（source-available）——源码公开可读，但保留了商业权利。这正是本项目的意图：人人可免费用，只有版权人可以商用。
+
+## 发布
+
+`git tag vX.Y.Z && git push origin vX.Y.Z` 触发三平台自动构建（macOS universal dmg / Windows msi+安装器 / Linux deb+AppImage），产物自动附到 GitHub Releases。支持矩阵：Windows 10+、macOS 10.13+、Linux（WebKitGTK 4.1）。
