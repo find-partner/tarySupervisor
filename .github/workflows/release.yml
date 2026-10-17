@@ -93,41 +93,54 @@ jobs:
           $ErrorActionPreference = "Stop"
           ./portable/assemble.ps1 -Exe target/release/traysupervisor.exe -Out portable-dist
 
-          # PA.c 官方开发工具：paf.exe 本身是 NSIS 包，7z 解包即得工具目录。
-          # 主源不可达时退回 MuseScore CI 维护的 S3 镜像（zip 为解压好的工具目录）。
+          # PA.c 官方开发工具。主源：MuseScore CI 维护的 S3 镜像（zip = 解压好的工具
+          # 目录，Azure runner → S3 直连；MuseScore 自家 CI 同款用法）。备源：PA.c
+          # 官方 paf.exe（NSIS 包，7z 解包）——官方下载站对部分 TLS 栈握手失败，故不作主源。
           $tools = Join-Path $env:RUNNER_TEMP "pa-tools"
           New-Item -ItemType Directory -Force -Path $tools | Out-Null
-          $sz = (Get-Command 7z -ErrorAction SilentlyContinue).Source
-          if (-not $sz) { $sz = "C:\Program Files\7-Zip\7z.exe" }
 
-          $official = $true
+          $mirror = $true
           try {
-            Invoke-WebRequest -Uri "https://download.portableapps.com/portableapps/PortableApps.comLauncher/PortableApps.comLauncher_2.2.9.paf.exe" -OutFile "$tools\launcher.paf.exe" -TimeoutSec 120
-            Invoke-WebRequest -Uri "https://download.portableapps.com/portableapps/PortableApps.comInstaller/PortableApps.comInstaller_3.9.22.paf.exe" -OutFile "$tools\installer.paf.exe" -TimeoutSec 120
-            & $sz x -y "-o$tools" "$tools\launcher.paf.exe"
-            if ($LASTEXITCODE -ne 0) { throw "7z 解包 launcher 失败: $LASTEXITCODE" }
-            & $sz x -y "-o$tools" "$tools\installer.paf.exe"
-            if ($LASTEXITCODE -ne 0) { throw "7z 解包 installer 失败: $LASTEXITCODE" }
-          } catch {
-            Write-Host "官方源下载/解包失败，回退镜像：$($_.Exception.Message)"
-            $official = $false
-          }
-          if (-not $official) {
             Invoke-WebRequest -Uri "https://s3.amazonaws.com/utils.musescore.org/portableappslauncher.zip" -OutFile "$tools\launcher.zip" -TimeoutSec 300
             Invoke-WebRequest -Uri "https://s3.amazonaws.com/utils.musescore.org/portableappsinstaller.zip" -OutFile "$tools\installer.zip" -TimeoutSec 300
             Expand-Archive "$tools\launcher.zip" $tools -Force
             Expand-Archive "$tools\installer.zip" $tools -Force
+          } catch {
+            Write-Host "镜像源失败，回退官方 paf.exe：$($_.Exception.Message)"
+            $mirror = $false
+          }
+          if (-not $mirror) {
+            curl.exe -fL --retry 3 -o "$tools\launcher.paf.exe" "https://download.portableapps.com/portableapps/PortableApps.comLauncher/PortableApps.comLauncher_2.2.9.paf.exe"
+            if ($LASTEXITCODE -ne 0) { throw "官方 launcher 下载失败: $LASTEXITCODE" }
+            curl.exe -fL --retry 3 -o "$tools\installer.paf.exe" "https://download.portableapps.com/portableapps/PortableApps.comInstaller/PortableApps.comInstaller_3.9.22.paf.exe"
+            if ($LASTEXITCODE -ne 0) { throw "官方 installer 下载失败: $LASTEXITCODE" }
+            $sz = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+            if (-not $sz) { $sz = "C:\Program Files\7-Zip\7z.exe" }
+            & $sz x -y "-o$tools" "$tools\launcher.paf.exe"
+            if ($LASTEXITCODE -ne 0) { throw "7z 解包 launcher 失败: $LASTEXITCODE" }
+            & $sz x -y "-o$tools" "$tools\installer.paf.exe"
+            if ($LASTEXITCODE -ne 0) { throw "7z 解包 installer 失败: $LASTEXITCODE" }
           }
 
           $gen = (Get-ChildItem $tools -Recurse -Filter "PortableApps.comLauncherGenerator.exe" | Select-Object -First 1).FullName
           $ins = (Get-ChildItem $tools -Recurse -Filter "PortableApps.comInstaller.exe" | Select-Object -First 1).FullName
-          if (-not $gen -or -not $ins) { throw "解包后未找到 PortableApps.com 工具（Generator/Installer）" }
+          Write-Host "gen=$gen"
+          Write-Host "ins=$ins"
+          if (-not $gen -or -not $ins) { throw "工具目录中未找到 Generator/Installer exe" }
 
-          # 两条官方 CLI：生成 TraySupervisorPortable.exe 启动器 → 打出 .paf.exe
-          & $gen "$PWD/portable-dist/TraySupervisorPortable"
-          if ($LASTEXITCODE -ne 0) { throw "LauncherGenerator 失败: $LASTEXITCODE" }
-          & $ins "$PWD/portable-dist/TraySupervisorPortable"
-          if ($LASTEXITCODE -ne 0) { throw "PortableApps.comInstaller 失败: $LASTEXITCODE" }
+          # NSIS 工具对 CWD 敏感：进各自目录再调用；Start-Process 稳定取回退出码
+          function Invoke-PaTool([string] $exe, [string] $arg) {
+            $out = "$env:RUNNER_TEMP\$(Split-Path -Leaf $exe).out.log"
+            $err = "$env:RUNNER_TEMP\$(Split-Path -Leaf $exe).err.log"
+            $p = Start-Process -FilePath $exe -ArgumentList "`"$arg`"" -WorkingDirectory (Split-Path -Parent $exe) `
+                   -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+            Write-Host "---- $(Split-Path -Leaf $exe) exit=$($p.ExitCode)"
+            Get-Content $out -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+            Get-Content $err -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+            if ($p.ExitCode -ne 0) { throw "工具执行失败 ($exe)：exit=$($p.ExitCode)" }
+          }
+          Invoke-PaTool $gen "$PWD/portable-dist/TraySupervisorPortable"
+          Invoke-PaTool $ins "$PWD/portable-dist/TraySupervisorPortable"
 
           $dist = (Resolve-Path portable-dist).Path
           Get-ChildItem -Path . -Recurse -Filter "TraySupervisorPortable*.paf.exe" |
