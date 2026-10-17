@@ -14,10 +14,10 @@
 
 | 层级 | 内容 | 执行方式 | 位置 |
 |------|------|----------|------|
-| L1 单元 | 配置解析/校验/env 展开/大小单位/轮转/Matcher/vte 序列/命令行切分/粘贴解析/平台解析链与合并 | `cargo test -p traysupervisor-core --lib` | `crates/core/src/**`（104 个） |
+| L1 单元 | 配置解析/校验/env 展开/大小单位/轮转/Matcher/vte 序列/命令行切分/粘贴解析/平台解析链与合并 | `cargo test -p traysupervisor-core --lib` | `crates/core/src/**`（108 个） |
 | L2 集成 | 真实进程 spawn/停止/自动重启/PTY/热加载（Unix） | `cargo test -p traysupervisor-core` | `crates/core/tests/service_tests.rs`（11 个） |
 | L3 系统·脚本化 | 托盘应用整体行为（进程、文件、信号、菜单就地更新） | `scripts/smoke-unix.sh`（S-01~S-05）/ `scripts/smoke-windows.ps1`（S-06~S-08） | `scripts/` |
-| L4 系统·手动 GUI | 托盘菜单交互、窗口渲染、对话框 | 人工按 §5 用例（ST-01~ST-22）执行 | 本文记录表 |
+| L4 系统·手动 GUI | 托盘菜单交互、窗口渲染、对话框 | 人工按 §5 用例（ST-01~ST-27）执行 | 本文记录表 |
 | CI 回归 | 三平台编译 + L1/L2 + 前端构建 | push/PR 自动触发 | `.github/workflows/ci.yml` |
 
 > GUI 自动化限制：Tauri 的 WebDriver（tauri-driver）仅支持 Windows（WebView2）与 Linux（WebKitGTK）；
@@ -27,7 +27,7 @@
 
 | 编号 | 执行 | 覆盖的 SRS 验收点 |
 |------|------|-------------------|
-| A1 | `cargo test -p traysupervisor-core --lib`（104 单元） | FR-2.4（校验/切分/展开）、FR-2.2（大小单位 parse/format）、FR-4.2/4.3（环形缓冲/轮转/截断）、FR-5.1/5.2/5.4/5.6（匹配/去重/LRU/URL 白名单）、FR-6.1（vte 序列）、§3.4 INI 语义、FR-2.12（粘贴解析）、FR-2.13（解析链/env 标签合并/往返/diff） |
+| A1 | `cargo test -p traysupervisor-core --lib`（108 单元） | FR-2.4（校验/切分/展开）、FR-2.2（大小单位 parse/format）、FR-4.2/4.3（环形缓冲/轮转/截断）、FR-5.1/5.2/5.4/5.6（匹配/去重/LRU/URL 白名单）、FR-6.1（vte 序列）、§3.4 INI 语义、FR-2.12（粘贴解析）、FR-2.13（解析链/env 标签合并/往返/diff）、CONFIG-SPEC §1（便携数据目录优先级：env 覆盖 / exe 同级 Data marker / 回落） |
 | A2 | `cargo test -p traysupervisor-core`（含 11 集成，Unix） | FR-3.1~3.4（状态机/停止/重启/BACKOFF/FATAL）、FR-2.3（子进程 env）、FR-5.2/5.3/5.5（URL 预设规则提取/重启清空）、FR-6.2（PTY 捕获+快照）、FR-2.6（热载 diff） |
 | A3 | `scripts/smoke-unix.sh`（macOS/Linux，8 项断言） | S-01：FR-2.1 autostart + FR-3.7 信号退出清理；S-02：FR-4.3 轮转（100KB×3 缩减版，顺带覆盖 maxbytes 单位解析）；S-03：FR-2.6 热加载 applied/沿用；S-04：NFR-5 权限 0600；S-05：FR-1.6 就地更新（状态扰动期零重建） |
 | A4 | `scripts/smoke-windows.ps1`（Windows） | S-06：FR-3 树杀（cmd→ping 孙进程）+ KILL_ON_JOB_CLOSE 硬杀兜底；S-07：FR-2.6 热加载；S-08：配置文件存在性 |
@@ -173,6 +173,17 @@
   步骤：① 全局节手写 `platforms=home-mac:macos, build-box` 与 `current_platform=home-mac`，保存触发热载 ② 设置页观察解析链提示与平台下拉选项 ③ 为 `home-mac` 配命令行变体后启动服务，对比 `ps` 实际进程 ④ 手写 `current_platform=ghost`。
   预期：① 热载成功 ② 平台列/变体子标签出现自定义平台且 home-mac 带「本机」角标 ③ 实际拉起 home-mac 变体命令 ④ 校验失败横幅提示 current_platform 未注册。
 
+### 分发形态：Windows 便携包（CONFIG-SPEC §1 便携解析）
+
+- **ST-26 绿色解压包数据目录**
+  前置：Windows 上建目录，放入 `TraySupervisor.exe` 与空 `Data\` 子目录（绿色布局）；宿主 `%USERPROFILE%\.traysupervisor\` 预先存在旧配置。
+  步骤：① 启动 exe，从设置页新增一个服务并保存 ② 关闭应用，检查 exe 同级 `Data\` 与 `%USERPROFILE%\.traysupervisor\` ③ 删除 exe 旁 `Data\` 再启动。
+  预期：① 正常运行（设置窗口可开，即 WebView2 UDF 写入无障碍）② 新配置落在 `Data\config.ini`、日志在 `Data\logs\`、WebView2 数据在 `Data\EBWebView\`；宿主 `.traysupervisor` **无新写入** ③ 回落宿主 `.traysupervisor`（原旧配置可见）。
+- **ST-27 paf.exe 安装与升级保数据**
+  前置：CI 产出的 `TraySupervisorPortable_*.paf.exe`。
+  步骤：① 双击安装到默认位置，运行 `TraySupervisorPortable.exe`（经 PAL 启动器）保存一个服务 ② 换个盘符/目录整体移动 `TraySupervisorPortable\` 后再运行 ③ 安装新版本 paf.exe 覆盖升级后再运行。
+  预期：① 启动器拉起应用，数据在 `Data\`（PAL 注入 `TRAYSUPERVISOR_DATA_DIR`），设置窗口正常 ② 盘符变化后配置与日志仍正确读写（`DirectoryMoveOK`）③ 升级后 `Data\` 配置保留、App 被替换。
+
 ## 6. 结果记录矩阵
 
 | 用例 | Windows 11 | macOS 14 | Ubuntu 24.04 (GNOME) | Ubuntu 24.04 (KDE) |
@@ -202,6 +213,8 @@
 | ST-23 粘贴解析 | ☐ | ☐ | ☐ | ☐ |
 | ST-24 平台变体与同步 | ☐ | ☐ | ☐ | ☐ |
 | ST-25 当前平台声明 | ☐ | ☐ | ☐ | ☐ |
+| ST-26 绿色包数据目录 | ☐ | —（CONFIG-SPEC §1 回落语义由 A1 覆盖） | — | — |
+| ST-27 paf.exe 安装与升级 | ☐ | — | — | — |
 
 脚本化用例记录：S-01~S-05（macOS 本机 2026-10-03 全过，8/8 断言）；S-06~S-08 待 Windows 真机。
 CI：A5 待仓库接入 GitHub Actions 后首次运行确认。

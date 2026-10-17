@@ -14,6 +14,12 @@
 - 配置文件采用**与 supervisord 相似的 INI 风格**：`[program:<id>]` 分节、`key=value` 键值对、`#` / `;` 注释、UTF-8 编码。
 - 目标：复用 Python Supervisor 用户的心智与习惯——字段名与语义尽量对齐 supervisord；本项目特有功能按同风格扩展命名。
 - 单文件路径：`~/.traysupervisor/config.ini`（Windows 为 `%USERPROFILE%\.traysupervisor\config.ini`）；Unix 权限收紧为 0600（SRS NFR-5）。
+- **数据目录解析优先级**（`crates/core/src/lib.rs` `config_dir()`，按序取第一个命中）：
+  1. 环境变量 `TRAYSUPERVISOR_DATA_DIR`——PortableApps.com 便携包由启动器注入 `%PAL:DataDir%`，数据整体落在 `Data\`（config.ini / logs\ / EBWebView\）；
+  2. exe 同级存在 `Data` 目录——免启动器的绿色解压包布局，数据取该 `Data` 目录；
+  3. 回落 `~/.traysupervisor`——安装版与 macOS / Linux 常规分发形态，行为与历史版本一致。
+
+  命中 1/2 即为**便携形态**（`is_portable()`）：除数据目录外，WebView2 用户数据目录也收进 `<数据目录>\EBWebView`（Windows 留痕规避）；服务配置中的 `~/...` 仍展开为宿主 home（服务本就运行在宿主机上，属预期）。
 - 解析：`rust-ini` 读入 → 映射到 HLD §3.1 的语义模型（`ServiceConfig` 等结构体不变）→ 映射层完成全部校验（FR-2.4）。**未知键视为校验错误**（尽早暴露拼写错误）。
 
 ## 2. 全局节 `[traysupervisor]`

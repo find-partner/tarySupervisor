@@ -5,6 +5,16 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::AppState;
 
+/// 便携形态下把 WebView2 用户数据目录收进便携数据目录（否则 Windows 上 tauri
+/// 默认写 `%LOCALAPPDATA%\{identifier}`，违反便携应用"不留痕"要求）。
+/// 非便携返回 `None`，维持 tauri 默认（现有安装版行为不变）。
+fn webview_data_dir() -> Option<std::path::PathBuf> {
+    if !traysupervisor_core::is_portable() {
+        return None;
+    }
+    Some(traysupervisor_core::config_dir().join("EBWebView"))
+}
+
 fn focus_or_create<F>(app: &AppHandle, label: &str, create: F)
 where
     F: FnOnce(&str) -> Result<(), tauri::Error>,
@@ -20,11 +30,14 @@ where
 
 pub fn open_settings(app: &AppHandle) {
     focus_or_create(app, "settings", |label: &str| {
-        WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html#/settings".into()))
+        let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html#/settings".into()))
             .title("TraySupervisor 设置")
             .inner_size(1000.0, 700.0)
-            .min_inner_size(820.0, 560.0)
-            .build()?;
+            .min_inner_size(820.0, 560.0);
+        if let Some(dir) = webview_data_dir() {
+            builder = builder.data_directory(dir);
+        }
+        builder.build()?;
         Ok(())
     });
 }
@@ -34,10 +47,13 @@ pub fn open_log(app: &AppHandle, svc_id: &str) {
     let name = display_name(app, svc_id);
     let url = format!("index.html#/log/{svc_id}");
     focus_or_create(app, &label, move |label: &str| {
-        WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+        let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
             .title(format!("日志 — {name}"))
-            .inner_size(920.0, 620.0)
-            .build()?;
+            .inner_size(920.0, 620.0);
+        if let Some(dir) = webview_data_dir() {
+            builder = builder.data_directory(dir);
+        }
+        builder.build()?;
         Ok(())
     });
 }
@@ -47,10 +63,13 @@ pub fn open_term(app: &AppHandle, svc_id: &str) {
     let name = display_name(app, svc_id);
     let url = format!("index.html#/term/{svc_id}");
     focus_or_create(app, &label, move |label: &str| {
-        WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+        let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
             .title(format!("终端视图 — {name}"))
-            .inner_size(860.0, 520.0)
-            .build()?;
+            .inner_size(860.0, 520.0);
+        if let Some(dir) = webview_data_dir() {
+            builder = builder.data_directory(dir);
+        }
+        builder.build()?;
         Ok(())
     });
 }

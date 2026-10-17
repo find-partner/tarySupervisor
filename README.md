@@ -70,6 +70,8 @@ cargo check --workspace --all-targets          # 全量编译检查
 
 配置文件：`~/.traysupervisor/config.ini`（Unix 权限 0600），手改后自动热加载。
 
+**Windows 便携版**：Release 附带 `TraySupervisorPortable_*.paf.exe`（PortableApps.com Format，免安装、可放 U 盘）。便携形态下数据整体落在包内 `Data\`（config.ini / logs / WebView2 数据），不留痕宿主；解析优先级见 [CONFIG-SPEC §1](docs/CONFIG-SPEC.md)（也可不装 PAL 启动器，直接解压 paf.exe 后运行 `App\TraySupervisor\TraySupervisor.exe` 的绿色布局）。打包素材与组装脚本在 [portable/](portable/)，由 Release workflow 在 Windows job 自动构建。
+
 ## 目录结构
 
 ```
@@ -84,6 +86,7 @@ cargo check --workspace --all-targets          # 全量编译检查
 │       └── watcher.rs    # 配置文件热加载
 ├── src-tauri/            # Tauri 壳：commands / tray（持久菜单 + 就地更新）/ 窗口管理 / 事件桥接 / 信号处理
 ├── src/                  # Leptos 前端：设置页 / 日志页 / 终端页（hash 路由）
+├── portable/             # PortableApps.com 便携包素材：launcher.ini / appinfo 模板 / 组装脚本（CI 消费）
 ├── Trunk.toml / index.html
 └── docs/                 # SRS / HLD / CONFIG-SPEC / CLI-SPEC / SYSTEM-TEST / FAQ（常见问题清单）
 ```

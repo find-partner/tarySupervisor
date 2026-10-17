@@ -1,10 +1,12 @@
 # 发布工作流：tag 触发，三平台构建安装包并上传 GitHub Release
 #
-# 触发：推送 v* 标签（git tag v0.5.0 && git push origin v0.5.0）
+# 触发：推送 v* 标签（git tag v0.5.0 && git push origin v0.5.0）；
+#       workflow_dispatch 手动试跑（仅构建验证，不上传 Release）
 # 产物：
 #   - macOS：universal（Intel + Apple Silicon）dmg——MACOSX_DEPLOYMENT_TARGET=10.13
 #     （Tauri v2 最低要求；macOS 12 在两个架构的支持范围内）
 #   - Windows：msi + nsis 安装器（x64，要求 Windows 10+，Win7 不支持——见 SYSTEM-TEST §3）
+#     + PortableApps.com 便携包 paf.exe（portable/ 目录组装，数据落 Data\）
 #   - Linux：deb + AppImage（x64）
 #
 # 说明：tauri build 自动执行 beforeBuildCommand（trunk build）；应用未签名，
@@ -14,6 +16,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -38,6 +41,7 @@ jobs:
             bundles: |
               target/release/bundle/msi/*.msi
               target/release/bundle/nsis/*.exe
+              portable-dist/*.paf.exe
           - os: ubuntu-24.04
             targets: wasm32-unknown-unknown
             tauri_args: ""
@@ -82,7 +86,57 @@ jobs:
         if: runner.os != 'macOS'
         run: cargo tauri build ${{ matrix.tauri_args }}
 
+      - name: 构建 PortableApps.com 便携包（paf.exe）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./portable/assemble.ps1 -Exe target/release/traysupervisor.exe -Out portable-dist
+
+          # PA.c 官方开发工具：paf.exe 本身是 NSIS 包，7z 解包即得工具目录。
+          # 主源不可达时退回 MuseScore CI 维护的 S3 镜像（zip 为解压好的工具目录）。
+          $tools = Join-Path $env:RUNNER_TEMP "pa-tools"
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+          $sz = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+          if (-not $sz) { $sz = "C:\Program Files\7-Zip\7z.exe" }
+
+          $official = $true
+          try {
+            Invoke-WebRequest -Uri "https://download.portableapps.com/portableapps/PortableApps.comLauncher/PortableApps.comLauncher_2.2.9.paf.exe" -OutFile "$tools\launcher.paf.exe" -TimeoutSec 120
+            Invoke-WebRequest -Uri "https://download.portableapps.com/portableapps/PortableApps.comInstaller/PortableApps.comInstaller_3.9.22.paf.exe" -OutFile "$tools\installer.paf.exe" -TimeoutSec 120
+            & $sz x -y "-o$tools" "$tools\launcher.paf.exe"
+            if ($LASTEXITCODE -ne 0) { throw "7z 解包 launcher 失败: $LASTEXITCODE" }
+            & $sz x -y "-o$tools" "$tools\installer.paf.exe"
+            if ($LASTEXITCODE -ne 0) { throw "7z 解包 installer 失败: $LASTEXITCODE" }
+          } catch {
+            Write-Host "官方源下载/解包失败，回退镜像：$($_.Exception.Message)"
+            $official = $false
+          }
+          if (-not $official) {
+            Invoke-WebRequest -Uri "https://s3.amazonaws.com/utils.musescore.org/portableappslauncher.zip" -OutFile "$tools\launcher.zip" -TimeoutSec 300
+            Invoke-WebRequest -Uri "https://s3.amazonaws.com/utils.musescore.org/portableappsinstaller.zip" -OutFile "$tools\installer.zip" -TimeoutSec 300
+            Expand-Archive "$tools\launcher.zip" $tools -Force
+            Expand-Archive "$tools\installer.zip" $tools -Force
+          }
+
+          $gen = (Get-ChildItem $tools -Recurse -Filter "PortableApps.comLauncherGenerator.exe" | Select-Object -First 1).FullName
+          $ins = (Get-ChildItem $tools -Recurse -Filter "PortableApps.comInstaller.exe" | Select-Object -First 1).FullName
+          if (-not $gen -or -not $ins) { throw "解包后未找到 PortableApps.com 工具（Generator/Installer）" }
+
+          # 两条官方 CLI：生成 TraySupervisorPortable.exe 启动器 → 打出 .paf.exe
+          & $gen "$PWD/portable-dist/TraySupervisorPortable"
+          if ($LASTEXITCODE -ne 0) { throw "LauncherGenerator 失败: $LASTEXITCODE" }
+          & $ins "$PWD/portable-dist/TraySupervisorPortable"
+          if ($LASTEXITCODE -ne 0) { throw "PortableApps.comInstaller 失败: $LASTEXITCODE" }
+
+          $dist = (Resolve-Path portable-dist).Path
+          Get-ChildItem -Path . -Recurse -Filter "TraySupervisorPortable*.paf.exe" |
+            Where-Object { $_.DirectoryName -ne $dist } |
+            Move-Item -Destination $dist
+          Get-ChildItem $dist | ForEach-Object { Write-Host $_.Name }
+
       - name: 上传到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.bundles }}
