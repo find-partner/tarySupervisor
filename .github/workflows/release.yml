@@ -128,19 +128,27 @@ jobs:
           Write-Host "ins=$ins"
           if (-not $gen -or -not $ins) { throw "工具目录中未找到 Generator/Installer exe" }
 
-          # NSIS 工具对 CWD 敏感：进各自目录再调用；Start-Process 稳定取回退出码
+          # NSIS 系工具对 CWD 敏感（进各自目录调用）；无头环境下解析失败会弹 GUI
+          # 对话框干等——一律 10 分钟超时，超时杀进程树并吐出 stdout 尾部。
           function Invoke-PaTool([string] $exe, [string] $arg) {
             $out = "$env:RUNNER_TEMP\$(Split-Path -Leaf $exe).out.log"
             $err = "$env:RUNNER_TEMP\$(Split-Path -Leaf $exe).err.log"
             $p = Start-Process -FilePath $exe -ArgumentList "`"$arg`"" -WorkingDirectory (Split-Path -Parent $exe) `
-                   -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+                   -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+            if (-not $p.WaitForExit(600000)) {
+              $p.Kill($true)
+              Write-Host "---- 超时前 stdout 尾部："
+              Get-Content $out -ErrorAction SilentlyContinue | Select-Object -Last 20 | ForEach-Object { Write-Host $_ }
+              throw "工具执行超时（10 分钟），疑似 GUI 对话框挂起：$exe"
+            }
             Write-Host "---- $(Split-Path -Leaf $exe) exit=$($p.ExitCode)"
             Get-Content $out -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
             Get-Content $err -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
             if ($p.ExitCode -ne 0) { throw "工具执行失败 ($exe)：exit=$($p.ExitCode)" }
           }
-          Invoke-PaTool $gen "$PWD/portable-dist/TraySupervisorPortable"
-          Invoke-PaTool $ins "$PWD/portable-dist/TraySupervisorPortable"
+          $pkgWin = "$PWD\portable-dist\TraySupervisorPortable"
+          Invoke-PaTool $gen $pkgWin
+          Invoke-PaTool $ins $pkgWin
 
           $dist = (Resolve-Path portable-dist).Path
           Get-ChildItem -Path . -Recurse -Filter "TraySupervisorPortable*.paf.exe" |
