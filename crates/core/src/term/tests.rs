@@ -93,9 +93,7 @@ fn tab_and_backspace() {
     let mut emu = TermEmulator::new(20, 3);
     feed(&mut emu, "a\tb"); // a@0，制表到第 8 列，b@8（光标到 9）
     feed(&mut emu, "\x08X"); // BS → 光标 8，X 覆写 b
-    let joined: String = emu
-        .screen()
-        .lines[0]
+    let joined: String = emu.screen().lines[0]
         .clone()
         .into_iter()
         .map(|r| r.t)

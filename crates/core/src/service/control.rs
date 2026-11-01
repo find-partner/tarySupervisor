@@ -52,7 +52,12 @@ impl ServiceManager {
     pub fn start(&self, id: &str) -> Result<(), String> {
         match self.state_of(id) {
             None => Err(format!("服务 {id} 不存在")),
-            Some(st) if matches!(st, SvcState::Stopped | SvcState::Exited | SvcState::Fatal | SvcState::Backoff) => {
+            Some(st)
+                if matches!(
+                    st,
+                    SvcState::Stopped | SvcState::Exited | SvcState::Fatal | SvcState::Backoff
+                ) =>
+            {
                 self.send_cmd(id, SvcCmd::Start)
             }
             Some(st) => Err(format!("服务 {id} 当前为 {}，无需启动", st.as_str())),
@@ -62,7 +67,12 @@ impl ServiceManager {
     pub fn stop(&self, id: &str) -> Result<(), String> {
         match self.state_of(id) {
             None => Err(format!("服务 {id} 不存在")),
-            Some(st) if matches!(st, SvcState::Starting | SvcState::Running | SvcState::Stopping | SvcState::Backoff) => {
+            Some(st)
+                if matches!(
+                    st,
+                    SvcState::Starting | SvcState::Running | SvcState::Stopping | SvcState::Backoff
+                ) =>
+            {
                 self.send_cmd(id, SvcCmd::Stop)
             }
             Some(st) => Err(format!("服务 {id} 当前为 {}，无需停止", st.as_str())),
@@ -95,7 +105,10 @@ impl ServiceManager {
         let ctx = self.shared.ctxs.read().unwrap().get(id).cloned();
         let Some(ctx) = ctx else { return None };
         let items = ctx.matcher.lock().unwrap().items();
-        items.into_iter().find(|i| i.hash == hash).and_then(|i| i.url)
+        items
+            .into_iter()
+            .find(|i| i.hash == hash)
+            .and_then(|i| i.url)
     }
 
     /// 只读终端快照（FR-6.2：视图只是输出订阅者，PTY master 由后端持有）
@@ -122,16 +135,16 @@ impl ServiceManager {
                 .write_all(&data)
                 .and_then(|_| w.flush())
                 .map_err(|e| format!("写入服务 {id} 的 stdin 失败：{e}")),
-            None => Err(format!(
-                "服务 {id} 未运行或非 PTY 模式，无法接收输入"
-            )),
+            None => Err(format!("服务 {id} 未运行或非 PTY 模式，无法接收输入")),
         }
     }
 
     /// 运行中服务数（托盘 tooltip：运行中 n / 共 m 个服务）
     pub fn running_count(&self) -> usize {
         let sups = self.shared.sups.read().unwrap();
-        sups.values().filter(|s| s.state_rx.borrow().state.is_alive()).count()
+        sups.values()
+            .filter(|s| s.state_rx.borrow().state.is_alive())
+            .count()
     }
 
     pub fn total_count(&self) -> usize {

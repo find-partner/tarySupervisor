@@ -7,9 +7,19 @@ use std::path::{Path, PathBuf};
 use super::parse::{parse_bool, parse_u32, parse_u64, prop_get, Props};
 use crate::config::parse_environment;
 use crate::config::{
-    Autorestart, LogFilePolicy, LogPolicy, MatcherConfig, PlatformVariant, ServiceConfig, SpawnMode,
+    Autorestart, LogFilePolicy, LogPolicy, MatcherAction, MatcherConfig, PlatformVariant,
+    ServiceConfig, SpawnMode,
 };
 use crate::expand_tilde;
+
+/// matcher.N 各字段的原始解析中间态（CONFIG-SPEC §5）
+#[derive(Default)]
+struct MatcherRaw {
+    pattern: Option<String>,
+    action: Option<String>,
+    template: Option<String>,
+    max_items: Option<u32>,
+}
 
 /// 平台变体键判定（FR-2.13）：`command.<平台>` / `directory.<平台>` /
 /// `spawn_mode.<平台>` / `term_interactive.<平台>`，后缀非空且不含第二个 '.'。
@@ -218,8 +228,7 @@ fn parse_matchers(props: Props<'_>, section_name: &str) -> Result<Vec<MatcherCon
         "logfile_compress",
         "shell",
     ];
-    let mut matcher_raw: BTreeMap<u32, (Option<String>, Option<String>, Option<u32>)> =
-        BTreeMap::new();
+    let mut matcher_raw: BTreeMap<u32, MatcherRaw> = BTreeMap::new();
     for (k, v) in props.iter() {
         if let Some(rest) = k.strip_prefix("matcher.") {
             let Some((num, field)) = rest.split_once('.') else {
@@ -232,10 +241,11 @@ fn parse_matchers(props: Props<'_>, section_name: &str) -> Result<Vec<MatcherCon
                 .map_err(|_| format!("[{section_name}] matcher 编号 {num:?} 非法"))?;
             let entry = matcher_raw.entry(n).or_default();
             match field {
-                "pattern" => entry.0 = Some(v.to_string()),
-                "template" => entry.1 = Some(v.to_string()),
+                "pattern" => entry.pattern = Some(v.to_string()),
+                "action" => entry.action = Some(v.to_string()),
+                "template" => entry.template = Some(v.to_string()),
                 "max_items" => {
-                    entry.2 = Some(parse_u32(
+                    entry.max_items = Some(parse_u32(
                         v,
                         &format!("[{section_name}] matcher.{n}.max_items"),
                     )?)
@@ -257,12 +267,25 @@ fn parse_matchers(props: Props<'_>, section_name: &str) -> Result<Vec<MatcherCon
                 "[{section_name}] matcher 编号必须从 1 连续递增：期望 {expect}，实际 {n}"
             ));
         }
-        let (pattern, template, max_items) = fields;
+        let MatcherRaw {
+            pattern,
+            action,
+            template,
+            max_items,
+        } = fields;
         let Some(pattern) = pattern else {
             return Err(format!("[{section_name}] matcher.{n} 缺少 pattern"));
         };
+        // 缺省 open_button：旧配置（无 action 键）行为不变
+        let action = match action.as_deref() {
+            None => MatcherAction::OpenButton,
+            Some(s) => s
+                .parse()
+                .map_err(|e| format!("[{section_name}] matcher.{n}：{e}"))?,
+        };
         matchers.push(MatcherConfig {
             pattern,
+            action,
             template: template.unwrap_or_else(|| "🌐 打开 {0}".to_string()),
             max_items: max_items.unwrap_or(5),
         });

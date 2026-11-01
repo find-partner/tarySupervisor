@@ -400,12 +400,55 @@ pub struct LogFilePolicy {
     pub compress: bool,
 }
 
+/// Matcher 命中后的动作（FR-5.1 三段式：正则 + 动作 + 参数模版）。
+/// 模版统一渲染文案（按钮文字 / 通知正文）；URL 恒从捕获组自动探测
+/// （任一捕获组以 http(s) 开头）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MatcherAction {
+    /// 命中后在托盘菜单加"打开"按钮，点击才打开（默认，向后兼容）
+    #[default]
+    OpenButton,
+    /// 命中且解析出 URL 后立即自动打开（托盘菜单仍保留该项）
+    OpenUrl,
+    /// 命中后弹系统通知，正文 = 模版渲染（托盘菜单仍保留该项）
+    Notify,
+}
+
+impl MatcherAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::OpenButton => "open_button",
+            Self::OpenUrl => "open_url",
+            Self::Notify => "notify",
+        }
+    }
+}
+
+/// 非法值报错（INI 解析与 IPC 转换共用；IPC 转换侧自行 fallback）
+impl std::str::FromStr for MatcherAction {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "open_button" => Ok(Self::OpenButton),
+            "open_url" => Ok(Self::OpenUrl),
+            "notify" => Ok(Self::Notify),
+            other => Err(format!(
+                "未知动作 {other:?}（支持 open_button / open_url / notify）"
+            )),
+        }
+    }
+}
+
 /// Matcher 配置（FR-5.1 / CONFIG-SPEC §5）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MatcherConfig {
     /// Rust regex 语法
     pub pattern: String,
-    /// 菜单文案，{0} {1} 引用捕获组；默认「🌐 打开 {0}」
+    /// 命中后的动作（三段式）；缺省 open_button（旧配置向后兼容）
+    #[serde(default)]
+    pub action: MatcherAction,
+    /// 动作文案（按钮文字 / 通知正文），{0} {1} 引用捕获组；默认「🌐 打开 {0}」
     pub template: String,
     /// 该条快捷项上限（1–10，LRU 淘汰），默认 5
     pub max_items: u32,
@@ -415,6 +458,7 @@ impl Default for MatcherConfig {
     fn default() -> Self {
         Self {
             pattern: String::new(),
+            action: MatcherAction::OpenButton,
             template: "🌐 打开 {0}".to_string(),
             max_items: 5,
         }

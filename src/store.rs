@@ -28,31 +28,28 @@ pub fn ensure() -> RwSignal<Vec<ServiceBriefOut>> {
 
         // 状态变更：就地更新对应条目（与托盘 apply_state 同源事件）
         spawn_local(async move {
-            let _ = bridge
-                ::listen("service-state-changed", move |payload| {
-                    if let Ok(ev) = serde_wasm_bindgen::from_value::<StateChangedEv>(payload) {
-                        if let Some(sig) = STORE.get() {
-                            sig.update(|v| {
-                                if let Some(b) = v.iter_mut().find(|b| b.config.id == ev.id) {
-                                    b.state = ev.info.state.clone();
-                                    b.pid = ev.info.pid;
-                                }
-                            });
-                        }
+            let _ = bridge::listen("service-state-changed", move |payload| {
+                if let Ok(ev) = serde_wasm_bindgen::from_value::<StateChangedEv>(payload) {
+                    if let Some(sig) = STORE.get() {
+                        sig.update(|v| {
+                            if let Some(b) = v.iter_mut().find(|b| b.config.id == ev.id) {
+                                b.state = ev.info.state.clone();
+                                b.pid = ev.info.pid;
+                            }
+                        });
                     }
-                })
-                .await;
+                }
+            })
+            .await;
             // 服务集合变化 / 热加载 → 全量刷新（FR-2.6 / FR-1.10）
-            let _ = bridge
-                ::listen("config-changed", move |_| {
-                    spawn_local(async move { refresh().await });
-                })
-                .await;
-            let _ = bridge
-                ::listen("config-invalid", move |_| {
-                    spawn_local(async move { refresh().await });
-                })
-                .await;
+            let _ = bridge::listen("config-changed", move |_| {
+                spawn_local(async move { refresh().await });
+            })
+            .await;
+            let _ = bridge::listen("config-invalid", move |_| {
+                spawn_local(async move { refresh().await });
+            })
+            .await;
         });
 
         list

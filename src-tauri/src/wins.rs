@@ -30,10 +30,11 @@ where
 
 pub fn open_settings(app: &AppHandle) {
     focus_or_create(app, "settings", |label: &str| {
-        let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html#/settings".into()))
-            .title("TraySupervisor 设置")
-            .inner_size(1000.0, 700.0)
-            .min_inner_size(820.0, 560.0);
+        let mut builder =
+            WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html#/settings".into()))
+                .title("TraySupervisor 设置")
+                .inner_size(1000.0, 700.0)
+                .min_inner_size(820.0, 560.0);
         if let Some(dir) = webview_data_dir() {
             builder = builder.data_directory(dir);
         }

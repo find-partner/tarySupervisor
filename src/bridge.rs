@@ -31,9 +31,8 @@ pub async fn invoke_t<T: serde::de::DeserializeOwned>(cmd: &str, args: Option<Js
     let raw = invoke(cmd, args)
         .await
         .unwrap_or_else(|e| wasm_bindgen::throw_str(&js_str(&e)));
-    serde_wasm_bindgen::from_value(raw).unwrap_or_else(|e| {
-        wasm_bindgen::throw_str(&format!("反序列化 {cmd} 返回值失败：{e}"))
-    })
+    serde_wasm_bindgen::from_value(raw)
+        .unwrap_or_else(|e| wasm_bindgen::throw_str(&format!("反序列化 {cmd} 返回值失败：{e}")))
 }
 
 pub async fn invoke_unit_res(cmd: &str, args: Option<JsValue>) -> Result<(), String> {
@@ -96,9 +95,8 @@ pub async fn listen<F: Fn(JsValue) + 'static>(
 }
 
 pub fn to_js<T: serde::Serialize>(v: &T) -> JsValue {
-    serde_wasm_bindgen::to_value(v).unwrap_or_else(|e| {
-        wasm_bindgen::throw_str(&format!("序列化参数失败：{e}"))
-    })
+    serde_wasm_bindgen::to_value(v)
+        .unwrap_or_else(|e| wasm_bindgen::throw_str(&format!("序列化参数失败：{e}")))
 }
 
 pub fn invoke_args_input(input: &ServiceInput) -> JsValue {
@@ -116,8 +114,16 @@ pub fn invoke_args_id(id: &str) -> JsValue {
 pub fn invoke_args_log(id: &str, since: u64, limit: usize) -> JsValue {
     let obj = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("id"), &JsValue::from_str(id));
-    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("since"), &JsValue::from_f64(since as f64));
-    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("limit"), &JsValue::from_f64(limit as f64));
+    let _ = js_sys::Reflect::set(
+        &obj,
+        &JsValue::from_str("since"),
+        &JsValue::from_f64(since as f64),
+    );
+    let _ = js_sys::Reflect::set(
+        &obj,
+        &JsValue::from_str("limit"),
+        &JsValue::from_f64(limit as f64),
+    );
     obj.into()
 }
 

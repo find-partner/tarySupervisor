@@ -8,7 +8,7 @@ use std::sync::Arc;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::oneshot;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GENERIC_READ, SetHandleInformation, HANDLE_FLAG_INHERIT,
+    CloseHandle, SetHandleInformation, GENERIC_READ, HANDLE_FLAG_INHERIT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -23,8 +23,11 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use super::winapi;
-use super::{default_cwd, resolve_command, spawn_pty_reader_thread, spawn_reader_thread, ExitInfo, Killer, RunCtx};
 use super::HubMsg;
+use super::{
+    default_cwd, resolve_command, spawn_pty_reader_thread, spawn_reader_thread, ExitInfo, Killer,
+    RunCtx,
+};
 use crate::config::ServiceConfig;
 
 pub(super) fn spawn_pipe(
@@ -41,7 +44,8 @@ pub(super) fn spawn_pipe(
 
     let result: Result<RunCtx, String> = unsafe {
         let mut sa = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
+            nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>()
+                as u32,
             lpSecurityDescriptor: std::ptr::null_mut(),
             bInheritHandle: 1,
         };
@@ -73,13 +77,21 @@ pub(super) fn spawn_pipe(
         let mut cmdline: Vec<u16> = winapi::to_wide(&format!(
             "{} {}",
             winapi::quote_arg(&prog),
-            args.iter().map(|a| winapi::quote_arg(a)).collect::<Vec<_>>().join(" ")
+            args.iter()
+                .map(|a| winapi::quote_arg(a))
+                .collect::<Vec<_>>()
+                .join(" ")
         ));
         // CREATE_UNICODE_ENVIRONMENT 是整体替换：环境块 = 继承本进程环境 + 服务条目覆盖，
         // 与 Unix Command::env 的「继承+覆盖」语义一致。仅传服务条目会得到空环境，
         // 子进程缺 SystemRoot/PATH 秒退（PATH 兜底注入在 Windows 明确不做，见 shellenv）。
         let mut full_env: std::collections::BTreeMap<String, String> = std::env::vars_os()
-            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned()))
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.to_string_lossy().into_owned(),
+                )
+            })
             .collect();
         full_env.extend(env.iter().map(|(k, v)| (k.clone(), v.clone())));
         let env_block = winapi::build_env_block(&full_env);
@@ -101,7 +113,11 @@ pub(super) fn spawn_pipe(
             1, // bInheritHandles
             CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT,
             env_block.as_ptr() as *const core::ffi::c_void,
-            if cfg.cwd.is_some() { cwd_w.as_ptr() } else { std::ptr::null() },
+            if cfg.cwd.is_some() {
+                cwd_w.as_ptr()
+            } else {
+                std::ptr::null()
+            },
             &si,
             &mut pi,
         );
@@ -125,11 +141,14 @@ pub(super) fn spawn_pipe(
         CloseHandle(pi.hThread);
 
         // 写端移交子进程：管道读端包装为 File 后由读线程接管
-        let out_reader = Box::new(std::fs::File::from_raw_handle(out_rd))
-            as Box<dyn Read + Send>;
-        let err_reader = Box::new(std::fs::File::from_raw_handle(err_rd))
-            as Box<dyn Read + Send>;
-        spawn_reader_thread(out_reader, crate::events::Stream::Out, false, hub_tx.clone());
+        let out_reader = Box::new(std::fs::File::from_raw_handle(out_rd)) as Box<dyn Read + Send>;
+        let err_reader = Box::new(std::fs::File::from_raw_handle(err_rd)) as Box<dyn Read + Send>;
+        spawn_reader_thread(
+            out_reader,
+            crate::events::Stream::Out,
+            false,
+            hub_tx.clone(),
+        );
         spawn_reader_thread(
             err_reader,
             crate::events::Stream::Err,
@@ -153,7 +172,10 @@ pub(super) fn spawn_pipe(
                 code
             };
             drop(job_for_wait);
-            let _ = exit_tx.send(ExitInfo { code: Some(code as i32), signal: None });
+            let _ = exit_tx.send(ExitInfo {
+                code: Some(code as i32),
+                signal: None,
+            });
         });
 
         // 优雅停止：CTRL_BREAK 尽力尝试；失败回退终止直接子进程（强杀树交给 Job）
@@ -169,7 +191,12 @@ pub(super) fn spawn_pipe(
                 TerminateJobObject(job_kill.0, 1);
             },
         );
-        Ok(RunCtx { pid, killer, exit: exit_rx, pty_writer: None })
+        Ok(RunCtx {
+            pid,
+            killer,
+            exit: exit_rx,
+            pty_writer: None,
+        })
     };
     result
 }
@@ -182,7 +209,12 @@ pub(super) fn spawn_pty(
 ) -> Result<RunCtx, String> {
     let term = term.cloned().ok_or("PTY 模式缺少终端句柄")?;
     let pair = native_pty_system()
-        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| format!("打开 ConPTY 失败：{e}"))?;
     let (prog, args) = resolve_command(cfg);
     let mut cmd = CommandBuilder::new(&prog);
@@ -197,8 +229,14 @@ pub(super) fn spawn_pty(
         .map_err(|e| format!("无法启动 {}：{e}", cfg.command))?;
     let pid = child.process_id().ok_or("PTY 子进程无 PID")?;
     drop(pair.slave);
-    let reader = pair.master.try_clone_reader().map_err(|e| format!("PTY reader 失败：{e}"))?;
-    let writer = pair.master.take_writer().map_err(|e| format!("PTY writer 失败：{e}"))?;
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("PTY reader 失败：{e}"))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("PTY writer 失败：{e}"))?;
     spawn_pty_reader_thread(Box::new(reader), term, hub_tx.clone());
 
     // ConPTY 下无可用优雅停止：kill（TerminateProcess）即时终止，树由 ConPTY 会话回收
@@ -210,27 +248,36 @@ pub(super) fn spawn_pty(
                 let _ = k.kill();
             }
         },
-        move || {
-            unsafe {
-                let h = windows_sys::Win32::System::Threading::OpenProcess(
-                    windows_sys::Win32::System::Threading::PROCESS_TERMINATE,
-                    0,
-                    pid,
-                );
-                if !h.is_null() {
-                    TerminateProcess(h, 1);
-                    CloseHandle(h);
-                }
+        move || unsafe {
+            let h = windows_sys::Win32::System::Threading::OpenProcess(
+                windows_sys::Win32::System::Threading::PROCESS_TERMINATE,
+                0,
+                pid,
+            );
+            if !h.is_null() {
+                TerminateProcess(h, 1);
+                CloseHandle(h);
             }
         },
     );
     let (exit_tx, exit_rx) = oneshot::channel();
     std::thread::spawn(move || {
         let info = match child.wait() {
-            Ok(st) => ExitInfo { code: Some(st.exit_code() as i32), signal: None },
-            Err(_) => ExitInfo { code: Some(-1), signal: None },
+            Ok(st) => ExitInfo {
+                code: Some(st.exit_code() as i32),
+                signal: None,
+            },
+            Err(_) => ExitInfo {
+                code: Some(-1),
+                signal: None,
+            },
         };
         let _ = exit_tx.send(info);
     });
-    Ok(RunCtx { pid, killer, exit: exit_rx, pty_writer: Some(writer) })
+    Ok(RunCtx {
+        pid,
+        killer,
+        exit: exit_rx,
+        pty_writer: Some(writer),
+    })
 }

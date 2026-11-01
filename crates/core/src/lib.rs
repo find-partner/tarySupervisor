@@ -17,7 +17,7 @@ pub mod service;
 pub mod term;
 pub mod watcher;
 
-pub use events::{CoreEvent, LogLine, MatchItem, SvcState, StopReason, Stream};
+pub use events::{CoreEvent, LogLine, MatchItem, StopReason, Stream, SvcState};
 pub use service::{ServiceBrief, ServiceManager};
 
 use std::path::{Path, PathBuf};

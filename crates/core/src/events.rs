@@ -8,6 +8,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::config::ConfigDelta;
+use crate::config::MatcherAction;
 use crate::term::TermScreen;
 
 /// 服务生命周期状态（FR-1.5 / FR-3.1，对齐 Supervisor 语义）
@@ -58,7 +59,10 @@ impl SvcState {
     }
 
     pub fn is_alive(&self) -> bool {
-        matches!(self, SvcState::Starting | SvcState::Running | SvcState::Stopping)
+        matches!(
+            self,
+            SvcState::Starting | SvcState::Running | SvcState::Stopping
+        )
     }
 }
 
@@ -111,7 +115,9 @@ pub struct LogLine {
 pub struct MatchItem {
     /// 以匹配结果哈希为键（去重 + 菜单项 ID 编码 match:<svc_id>:<hash>）
     pub hash: u64,
-    /// 模板渲染后的菜单文案
+    /// 命中后的动作（三段式，FR-5.1）
+    pub action: MatcherAction,
+    /// 模板渲染后的文案（按钮文字 / 通知正文）
     pub label: String,
     /// http/https 链接；非链接项为 None（菜单中禁用，FR-5.6）
     pub url: Option<String>,
@@ -132,13 +138,29 @@ pub struct StateInfo {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CoreEvent {
-    StateChanged { id: String, info: StateInfo },
-    LogAppended { id: String, lines: Vec<LogLine> },
-    MatcherHit { svc_id: String, items: Vec<MatchItem> },
-    ConfigChanged { delta: ConfigDelta },
+    StateChanged {
+        id: String,
+        info: StateInfo,
+    },
+    LogAppended {
+        id: String,
+        lines: Vec<LogLine>,
+    },
+    MatcherHit {
+        svc_id: String,
+        items: Vec<MatchItem>,
+    },
+    ConfigChanged {
+        delta: ConfigDelta,
+    },
     /// 热加载校验失败（FR-2.6：沿用上一次有效配置并提示）
-    ConfigInvalid { errors: Vec<String> },
-    TermFrame { id: String, screen: TermScreen },
+    ConfigInvalid {
+        errors: Vec<String>,
+    },
+    TermFrame {
+        id: String,
+        screen: TermScreen,
+    },
 }
 
 /// 事件广播总线

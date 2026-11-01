@@ -7,7 +7,9 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 use crate::bridge;
-use crate::dto::{LogAppendedEv, RunDto, ServiceBriefOut, StateChangedEv, StyleDto, TermFrameEv, TermScreenDto};
+use crate::dto::{
+    LogAppendedEv, RunDto, ServiceBriefOut, StateChangedEv, StyleDto, TermFrameEv, TermScreenDto,
+};
 
 fn style_css(s: &StyleDto) -> String {
     let mut css = String::new();
@@ -118,63 +120,54 @@ pub fn TermPage(id: String) -> impl IntoView {
                 bridge::invoke_t("term_snapshot", Some(bridge::invoke_args_id(&id2))).await;
             set_screen.set(snap);
             let id3 = id.clone();
-            let _ = bridge
-                ::listen("term-frame", move |payload| {
-                    if let Ok(ev) = serde_wasm_bindgen::from_value::<TermFrameEv>(payload) {
-                        if ev.id == id3 {
-                            set_screen.set(Some(ev.screen));
-                        }
-                    }
-                })
-                .await;
-        } else {
-            // 管道模式：纯文本流
-            let history: Vec<crate::dto::LogLine> = bridge::invoke_t(
-                "get_log",
-                Some(bridge::invoke_args_log(&id2, 0, 2000)),
-            )
-            .await;
-            set_pipe_lines.set(
-                history
-                    .into_iter()
-                    .map(|l| (l.stream, l.text))
-                    .collect(),
-            );
-            let id3 = id.clone();
-            let _ = bridge
-                ::listen("log-appended", move |payload| {
-                    if let Ok(ev) = serde_wasm_bindgen::from_value::<LogAppendedEv>(payload) {
-                        if ev.id == id3 {
-                            set_pipe_lines.update(|v| {
-                                v.extend(ev.lines.into_iter().map(|l| (l.stream, l.text)));
-                                if v.len() > 2000 {
-                                    let drop = v.len() - 2000;
-                                    v.drain(..drop);
-                                }
-                            });
-                        }
-                    }
-                })
-                .await;
-        }
-
-        let id4 = id.clone();
-        let _ = bridge
-            ::listen("service-state-changed", move |payload| {
-                if let Ok(ev) = serde_wasm_bindgen::from_value::<StateChangedEv>(payload) {
-                    if ev.id == id4 {
-                        set_state.set(ev.info.state);
-                        set_pid.set(ev.info.pid);
+            let _ = bridge::listen("term-frame", move |payload| {
+                if let Ok(ev) = serde_wasm_bindgen::from_value::<TermFrameEv>(payload) {
+                    if ev.id == id3 {
+                        set_screen.set(Some(ev.screen));
                     }
                 }
             })
             .await;
+        } else {
+            // 管道模式：纯文本流
+            let history: Vec<crate::dto::LogLine> =
+                bridge::invoke_t("get_log", Some(bridge::invoke_args_log(&id2, 0, 2000))).await;
+            set_pipe_lines.set(history.into_iter().map(|l| (l.stream, l.text)).collect());
+            let id3 = id.clone();
+            let _ = bridge::listen("log-appended", move |payload| {
+                if let Ok(ev) = serde_wasm_bindgen::from_value::<LogAppendedEv>(payload) {
+                    if ev.id == id3 {
+                        set_pipe_lines.update(|v| {
+                            v.extend(ev.lines.into_iter().map(|l| (l.stream, l.text)));
+                            if v.len() > 2000 {
+                                let drop = v.len() - 2000;
+                                v.drain(..drop);
+                            }
+                        });
+                    }
+                }
+            })
+            .await;
+        }
+
+        let id4 = id.clone();
+        let _ = bridge::listen("service-state-changed", move |payload| {
+            if let Ok(ev) = serde_wasm_bindgen::from_value::<StateChangedEv>(payload) {
+                if ev.id == id4 {
+                    set_state.set(ev.info.state);
+                    set_pid.set(ev.info.pid);
+                }
+            }
+        })
+        .await;
 
         // ---- 交互输入（FR-6.4/6.5）：仅 term_interactive 服务挂监听 ----
         if !term_interactive.get_untracked() {
             return;
         }
-        let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
+        let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+            return;
+        };
 
         let send = move |bytes: &[u8]| {
             if !rw.get_untracked() {
@@ -194,20 +187,22 @@ pub fn TermPage(id: String) -> impl IntoView {
         let sender = send.clone();
         let key_handler: Closure<dyn FnMut(web_sys::KeyboardEvent)> =
             Closure::wrap(Box::new(move |ev: web_sys::KeyboardEvent| {
-                let Some(bytes) = key_to_bytes(&ev) else { return };
+                let Some(bytes) = key_to_bytes(&ev) else {
+                    return;
+                };
                 ev.prevent_default();
                 sender(&bytes);
             }));
-        let _ = doc.add_event_listener_with_callback(
-            "keydown",
-            key_handler.as_ref().unchecked_ref(),
-        );
+        let _ =
+            doc.add_event_listener_with_callback("keydown", key_handler.as_ref().unchecked_ref());
         key_handler.forget();
 
         let sender = send.clone();
         let paste_handler: Closure<dyn FnMut(web_sys::ClipboardEvent)> =
             Closure::wrap(Box::new(move |ev: web_sys::ClipboardEvent| {
-                let Some(dt) = ev.clipboard_data() else { return };
+                let Some(dt) = ev.clipboard_data() else {
+                    return;
+                };
                 if let Ok(text) = dt.get_data("text") {
                     if !text.is_empty() {
                         ev.prevent_default();
@@ -215,10 +210,8 @@ pub fn TermPage(id: String) -> impl IntoView {
                     }
                 }
             }));
-        let _ = doc.add_event_listener_with_callback(
-            "paste",
-            paste_handler.as_ref().unchecked_ref(),
-        );
+        let _ =
+            doc.add_event_listener_with_callback("paste", paste_handler.as_ref().unchecked_ref());
         paste_handler.forget();
     });
 

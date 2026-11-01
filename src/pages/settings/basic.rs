@@ -7,7 +7,7 @@ use leptos::*;
 use crate::bridge;
 use crate::dto::{PastedLineDto, PlatformInfoDto};
 
-use super::form::{set_form_value, FormState};
+use super::form::{env_row, env_row_mut, next_row_uid, set_form_value, EnvRow, FormState};
 
 /// 平台变体字段写入：读出子表单 → mutate → 写回（成对出现在 input/change 处理器中）
 fn set_platform_field(
@@ -55,12 +55,16 @@ pub fn basic_panel(
                             f.command_line = parsed.command_line.clone();
                             for e in parsed.env {
                                 // 重复 KEY 就地覆盖（与 shell 语义一致）
-                                if let Some(slot) = f.env.iter_mut().find(|x| x.key == e.key) {
-                                    slot.value = e.value.clone();
-                                    slot.expand = e.expand;
-                                    slot.platform = e.platform.clone();
+                                if let Some(slot) = f.env.iter_mut().find(|x| x.entry.key == e.key)
+                                {
+                                    slot.entry.value = e.value.clone();
+                                    slot.entry.expand = e.expand;
+                                    slot.entry.platform = e.platform.clone();
                                 } else {
-                                    f.env.push(e);
+                                    f.env.push(EnvRow {
+                                        uid: next_row_uid(),
+                                        entry: e,
+                                    });
                                 }
                             }
                         });
@@ -413,7 +417,8 @@ fn platform_variant_fields(
     }
 }
 
-/// 环境变量表（FR-2.3 + FR-2.13 行级平台列）；原 env_panel 并入基础配置页
+/// 环境变量表（FR-2.3 + FR-2.13 行级平台列）；原 env_panel 并入基础配置页。
+/// `<For>` keyed 行（uid）：同 key 行复用 DOM，输入不丢焦点
 fn env_table(
     form: RwSignal<FormState>,
     mark0: impl Fn() + Copy + 'static,
@@ -422,11 +427,14 @@ fn env_table(
 ) -> impl IntoView {
     let add_row = move |_| {
         form.update(|f| {
-            f.env.push(crate::dto::EnvEntry {
-                key: String::new(),
-                value: String::new(),
-                expand: false,
-                platform: None,
+            f.env.push(EnvRow {
+                uid: next_row_uid(),
+                entry: crate::dto::EnvEntry {
+                    key: String::new(),
+                    value: String::new(),
+                    expand: false,
+                    platform: None,
+                },
             })
         });
         mark0();
@@ -441,43 +449,45 @@ fn env_table(
                 <tr><th>"Key"</th><th>"Value"</th><th>"替换"</th><th>"平台"</th><th></th></tr>
             </thead>
             <tbody>
-                {move || {
-                    form.get().env.iter().enumerate().map(|(i, _)| {
+                <For
+                    each=move || form.get().env.clone()
+                    key=|row| row.uid
+                    children=move |row| {
                         let rm = move |_| {
-                            form.update(|f| { f.env.remove(i); });
+                            form.update(|f| { f.env.retain(|r| r.uid != row.uid); });
                             mark0();
                         };
                         view! {
                             <tr>
                                 <td><input type="text"
-                                    prop:value=move || form.get().env.get(i).map(|e| e.key.clone()).unwrap_or_default()
+                                    prop:value=move || env_row(&form.get(), row.uid).map(|e| e.key.clone()).unwrap_or_default()
                                     on:input=move |e| {
                                         let v = event_target_value(&e);
-                                        form.update(|f| { if let Some(en) = f.env.get_mut(i) { en.key = v; } });
+                                        form.update(|f| { if let Some(en) = env_row_mut(f, row.uid) { en.key = v; } });
                                         mark0();
                                     } /></td>
                                 <td><input type="text"
-                                    prop:value=move || form.get().env.get(i).map(|e| e.value.clone()).unwrap_or_default()
+                                    prop:value=move || env_row(&form.get(), row.uid).map(|e| e.value.clone()).unwrap_or_default()
                                     on:input=move |e| {
                                         let v = event_target_value(&e);
-                                        form.update(|f| { if let Some(en) = f.env.get_mut(i) { en.value = v; } });
+                                        form.update(|f| { if let Some(en) = env_row_mut(f, row.uid) { en.value = v; } });
                                         mark0();
                                     } /></td>
                                 <td class="center"><input type="checkbox"
-                                    prop:checked=move || form.get().env.get(i).map(|e| e.expand).unwrap_or(false)
+                                    prop:checked=move || env_row(&form.get(), row.uid).map(|e| e.expand).unwrap_or(false)
                                     on:change=move |e| {
                                         let v = event_target_checked(&e);
-                                        form.update(|f| { if let Some(en) = f.env.get_mut(i) { en.expand = v; } });
+                                        form.update(|f| { if let Some(en) = env_row_mut(f, row.uid) { en.expand = v; } });
                                         mark0();
                                     } /></td>
                                 <td>
-                                    {platform_select(form, i, mark0, platform_info)}
+                                    {platform_select(form, row.uid, mark0, platform_info)}
                                 </td>
                                 <td class="center"><button class="danger" on:click=rm>"删除"</button></td>
                             </tr>
                         }
-                    }).collect::<Vec<_>>()
-                }}
+                    }
+                />
             </tbody>
         </table>
         <div style="margin-top:6px">
@@ -487,31 +497,27 @@ fn env_table(
     }
 }
 
-/// 单行平台下拉（全部平台 + 注册表平台，DESIGN §4.7）。
+/// 单行平台下拉（全部平台 + 注册表平台，DESIGN §4.7），按 uid 读写行数据。
 /// 整个 select 作为动态子树随值重建（选中态用构建期 selected 属性）：
 /// prop:value 求值早于 options 挂载会丢选中态，而 effect/spawn_local 在动态子树
 /// 重建时会在已销毁 owner 上 panic（leptos 0.6 runtime.rs:824）
 fn platform_select(
     form: RwSignal<FormState>,
-    i: usize,
+    uid: u64,
     mark0: impl Fn() + Copy + 'static,
     platform_info: RwSignal<PlatformInfoDto>,
 ) -> impl IntoView {
     move || {
-        let current = form
-            .get()
-            .env
-            .get(i)
+        let current = env_row(&form.get(), uid)
             .and_then(|e| e.platform.clone())
             .unwrap_or_default();
         let names = registry_platforms(platform_info);
-        let p2 = i;
         view! {
             <select style="min-width:110px"
                 on:change=move |e| {
                     let v = event_target_value(&e);
                     form.update(|f| {
-                        if let Some(en) = f.env.get_mut(p2) {
+                        if let Some(en) = env_row_mut(f, uid) {
                             en.platform = (!v.is_empty()).then(|| v.clone());
                         }
                     });

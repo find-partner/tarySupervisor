@@ -12,7 +12,7 @@ impl Perform for TermEmulator {
 
     fn execute(&mut self, byte: u8) {
         match byte {
-            0x07 => {} // BEL
+            0x07 => {}                                               // BEL
             0x08 => self.cursor.1 = self.cursor.1.saturating_sub(1), // BS
             0x09 => {
                 // TAB：8 列制表
@@ -25,10 +25,21 @@ impl Perform for TermEmulator {
         }
     }
 
-    fn csi_dispatch(&mut self, params: &vte::Params, _intermediates: &[u8], _ignore: bool, action: char) {
+    fn csi_dispatch(
+        &mut self,
+        params: &vte::Params,
+        _intermediates: &[u8],
+        _ignore: bool,
+        action: char,
+    ) {
         let items: Vec<Vec<u16>> = params.iter().map(|p| p.to_vec()).collect();
         let get = |i: usize, default: u16| -> u16 {
-            items.get(i).and_then(|p| p.first()).copied().filter(|&v| v != 0).unwrap_or(default)
+            items
+                .get(i)
+                .and_then(|p| p.first())
+                .copied()
+                .filter(|&v| v != 0)
+                .unwrap_or(default)
         };
         let (r, c) = self.cursor;
         match action {
@@ -36,8 +47,14 @@ impl Perform for TermEmulator {
             'B' | 'e' => self.cursor.0 = (r + get(0, 1).max(1)).min(self.rows - 1),
             'C' | 'a' => self.cursor.1 = (c + get(0, 1).max(1)).min(self.cols - 1),
             'D' => self.cursor.1 = c.saturating_sub(get(0, 1).max(1)),
-            'E' => { self.cursor.0 = (r + get(0, 1).max(1)).min(self.rows - 1); self.cursor.1 = 0; }
-            'F' => { self.cursor.0 = r.saturating_sub(get(0, 1).max(1)); self.cursor.1 = 0; }
+            'E' => {
+                self.cursor.0 = (r + get(0, 1).max(1)).min(self.rows - 1);
+                self.cursor.1 = 0;
+            }
+            'F' => {
+                self.cursor.0 = r.saturating_sub(get(0, 1).max(1));
+                self.cursor.1 = 0;
+            }
             'G' | '`' => self.cursor.1 = get(0, 1).max(1).saturating_sub(1).min(self.cols - 1),
             'd' => self.cursor.0 = get(0, 1).max(1).saturating_sub(1).min(self.rows - 1),
             'H' | 'f' => {
@@ -105,8 +122,11 @@ impl Perform for TermEmulator {
                     self.cursor = s;
                 }
             }
-            b'D' => self.linefeed(),                       // IND
-            b'E' => { self.cursor.1 = 0; self.linefeed(); } // NEL
+            b'D' => self.linefeed(), // IND
+            b'E' => {
+                self.cursor.1 = 0;
+                self.linefeed();
+            } // NEL
             b'M' => {
                 // RI：反向下滚
                 let (r, _) = self.cursor;
@@ -116,7 +136,9 @@ impl Perform for TermEmulator {
                     self.cursor.0 = r - 1;
                 }
             }
-            _ => { let _ = intermediates; }
+            _ => {
+                let _ = intermediates;
+            }
         }
     }
 }

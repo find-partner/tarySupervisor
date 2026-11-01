@@ -3,9 +3,11 @@
 
 use leptos::*;
 
-use crate::dto::{MatcherConfig, PlatformInfoDto};
+use crate::dto::PlatformInfoDto;
 
-use super::form::{set_form_value, FormState};
+use super::form::{
+    matcher_row, matcher_row_mut, next_row_uid, set_form_value, FormState, MatcherRow,
+};
 
 /// 启动策略（DESIGN §2 ②）：supervisor 如何对待进程——全平台共用
 pub fn strategy_panel(form: RwSignal<FormState>, dirty: RwSignal<Vec<bool>>) -> impl IntoView {
@@ -132,57 +134,80 @@ pub fn matcher_panel(form: RwSignal<FormState>, dirty: RwSignal<Vec<bool>>) -> i
     let mark3 = move || dirty.update(|d| d[3] = true);
     let add_m = move |_| {
         form.update(|f| {
-            f.matchers.push(MatcherConfig {
+            f.matchers.push(MatcherRow {
+                uid: next_row_uid(),
                 pattern: String::new(),
+                action: "open_button".into(),
                 template: "🌐 打开 {0}".into(),
-                max_items: 5,
+                max_items: "5".into(),
             })
         });
         mark3();
     };
     view! {
-        <div class="hint" style="margin:0 0 8px;">"日志正则 → 托盘快捷项；新建服务默认预填内置 HTTP URL 规则（FR-5.3），删除后不会隐式启用"</div>
+        <div class="hint" style="margin:0 0 8px;">
+            "正则 + 动作 + 模版 三段式：命中后按「动作」处理，模版渲染文案（&#123;0&#125; &#123;1&#125; 引用捕获组）；URL 从捕获组自动探测（任一捕获组以 http(s) 开头）。新建服务默认预填内置 URL 规则（FR-5.3），删除后不会隐式启用。"
+        </div>
         <table class="kv">
             <thead>
-                <tr><th>"Pattern（Rust regex）"</th><th>"模板（{0} {1} 引用捕获组）"</th><th>"上限"</th><th></th></tr>
+                <tr><th>"Pattern（Rust regex）"</th><th>"动作"</th><th>"模版（文案）"</th><th>"上限"</th><th></th></tr>
             </thead>
             <tbody>
-                {move || {
-                    form.get().matchers.iter().enumerate().map(|(i, _)| {
+                <For
+                    each=move || form.get().matchers.clone()
+                    key=|row| row.uid
+                    children=move |row| {
+                        // 行内按 uid 读写（索引会随删除移位）；For 同 key 行复用 DOM，
+                        // 输入时不重建节点——焦点丢失修复的关键
                         let rm = move |_| {
-                            form.update(|f| { f.matchers.remove(i); });
+                            form.update(|f| { f.matchers.retain(|r| r.uid != row.uid); });
                             mark3();
                         };
                         view! {
                             <tr>
                                 <td><input type="text"
-                                    prop:value=move || form.get().matchers.get(i).map(|m| m.pattern.clone()).unwrap_or_default()
+                                    prop:value=move || matcher_row(&form.get(), row.uid).map(|r| r.pattern.clone()).unwrap_or_default()
                                     on:input=move |e| {
                                         let v = event_target_value(&e);
-                                        form.update(|f| { if let Some(m) = f.matchers.get_mut(i) { m.pattern = v; } });
+                                        form.update(|f| { if let Some(r) = matcher_row_mut(f, row.uid) { r.pattern = v; } });
                                         mark3();
                                     } /></td>
+                                <td>
+                                    <select
+                                        on:change=move |e| {
+                                            let v = event_target_value(&e);
+                                            form.update(|f| { if let Some(r) = matcher_row_mut(f, row.uid) { r.action = v; } });
+                                            mark3();
+                                        }>
+                                        <option value="open_button" selected=row.action == "open_button">"打开按钮（点击打开）"</option>
+                                        <option value="open_url" selected=row.action == "open_url">"直接打开页面"</option>
+                                        <option value="notify" selected=row.action == "notify">"弹出通知"</option>
+                                    </select>
+                                </td>
                                 <td><input type="text"
-                                    prop:value=move || form.get().matchers.get(i).map(|m| m.template.clone()).unwrap_or_default()
+                                    prop:value=move || matcher_row(&form.get(), row.uid).map(|r| r.template.clone()).unwrap_or_default()
                                     on:input=move |e| {
                                         let v = event_target_value(&e);
-                                        form.update(|f| { if let Some(m) = f.matchers.get_mut(i) { m.template = v; } });
+                                        form.update(|f| { if let Some(r) = matcher_row_mut(f, row.uid) { r.template = v; } });
                                         mark3();
                                     } /></td>
                                 <td><input type="number" min="1" max="10"
-                                    prop:value=move || form.get().matchers.get(i).map(|m| m.max_items.to_string()).unwrap_or_default()
+                                    prop:value=move || matcher_row(&form.get(), row.uid).map(|r| r.max_items.clone()).unwrap_or_default()
                                     on:input=move |e| {
-                                        let v = event_target_value(&e).parse().unwrap_or(5);
-                                        form.update(|f| { if let Some(m) = f.matchers.get_mut(i) { m.max_items = v; } });
+                                        let v = event_target_value(&e);
+                                        form.update(|f| { if let Some(r) = matcher_row_mut(f, row.uid) { r.max_items = v; } });
                                         mark3();
                                     } /></td>
                                 <td class="center"><button class="danger" on:click=rm>"删除"</button></td>
                             </tr>
                         }
-                    }).collect::<Vec<_>>()
-                }}
+                    }
+                />
             </tbody>
         </table>
+        <div class="hint" style="margin:6px 0 0;">
+            "动作说明——打开按钮：命中后在托盘菜单加一项，点击才打开；直接打开页面：命中且捕获到 URL 时立即自动打开（托盘仍留项）；弹出通知：命中后弹系统通知（正文 = 模版渲染）。"
+        </div>
         <div style="margin-top:6px">
             <button on:click=add_m>"添加 Matcher"</button>
         </div>

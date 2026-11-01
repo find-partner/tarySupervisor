@@ -85,8 +85,13 @@ pub(super) async fn supervise(d: SupervisorDeps, mut cmd_rx: mpsc::UnboundedRece
     let mut state = SvcState::Stopped;
     let mut retries: u32 = 0;
     let mut backoff_until = TInstant::now();
-    let mut info =
-        StateInfo { state, pid: None, exit_code: None, reason: None, since_ms: now_ms() };
+    let mut info = StateInfo {
+        state,
+        pid: None,
+        exit_code: None,
+        reason: None,
+        since_ms: now_ms(),
+    };
     let _ = d.state_tx.send(info.clone());
 
     // 状态迁移同时更新 watch（供查询）与广播（供托盘/前端）
@@ -104,7 +109,10 @@ pub(super) async fn supervise(d: SupervisorDeps, mut cmd_rx: mpsc::UnboundedRece
         info.reason = reason.clone();
         info.since_ms = now_ms();
         let _ = d.state_tx.send(info.clone());
-        d.bus.send(CoreEvent::StateChanged { id: d.id.clone(), info: info.clone() });
+        d.bus.send(CoreEvent::StateChanged {
+            id: d.id.clone(),
+            info: info.clone(),
+        });
     }
 
     fn sys_line(d: &SupervisorDeps, text: String) {
@@ -114,16 +122,14 @@ pub(super) async fn supervise(d: SupervisorDeps, mut cmd_rx: mpsc::UnboundedRece
     'outer: loop {
         // ---------- 空闲态：Stopped / Exited / Fatal / Backoff ----------
         match state {
-            SvcState::Stopped | SvcState::Exited | SvcState::Fatal => {
-                match cmd_rx.recv().await {
-                    Some(SvcCmd::Start) | Some(SvcCmd::Restart) => {
-                        retries = 0;
-                        info.reason = None;
-                    }
-                    Some(SvcCmd::Stop) => continue,
-                    Some(SvcCmd::Shutdown) | None => break 'outer,
+            SvcState::Stopped | SvcState::Exited | SvcState::Fatal => match cmd_rx.recv().await {
+                Some(SvcCmd::Start) | Some(SvcCmd::Restart) => {
+                    retries = 0;
+                    info.reason = None;
                 }
-            }
+                Some(SvcCmd::Stop) => continue,
+                Some(SvcCmd::Shutdown) | None => break 'outer,
+            },
             SvcState::Backoff => {
                 tokio::select! {
                     _ = sleep_until(backoff_until) => {}
@@ -151,7 +157,10 @@ pub(super) async fn supervise(d: SupervisorDeps, mut cmd_rx: mpsc::UnboundedRece
             let cfg = d.cfg_rx.borrow().clone();
             // 服务重启后清空该服务的 Matcher 快捷项（FR-5.5）
             d.matcher.lock().unwrap().clear();
-            d.bus.send(CoreEvent::MatcherHit { svc_id: d.id.clone(), items: vec![] });
+            d.bus.send(CoreEvent::MatcherHit {
+                svc_id: d.id.clone(),
+                items: vec![],
+            });
             d.got_output.store(false, Ordering::Relaxed);
             // 清空上一轮的 PTY 写端（未运行期间不可写，FR-6.4）
             *d.ctx.pty_writer.lock().unwrap() = None;
@@ -164,22 +173,40 @@ pub(super) async fn supervise(d: SupervisorDeps, mut cmd_rx: mpsc::UnboundedRece
                     sys_line(&d, format!("[traysv] 启动失败：{e}"));
                     retries += 1;
                     if retries > cfg.startretries {
-                        sys_line(&d, format!(
-                            "[traysv] 状态：FATAL（启动重试耗尽，startretries={}）",
-                            cfg.startretries
-                        ));
-                        set_state(&d, &mut info, SvcState::Fatal, None, None,
-                            Some(StopReason::SpawnError(e)));
+                        sys_line(
+                            &d,
+                            format!(
+                                "[traysv] 状态：FATAL（启动重试耗尽，startretries={}）",
+                                cfg.startretries
+                            ),
+                        );
+                        set_state(
+                            &d,
+                            &mut info,
+                            SvcState::Fatal,
+                            None,
+                            None,
+                            Some(StopReason::SpawnError(e)),
+                        );
                         state = SvcState::Fatal;
                         break;
                     }
                     let delay = backoff_delay(retries);
-                    sys_line(&d, format!(
-                        "[traysv] 状态：BACKOFF（{}s 后第 {retries} 次重试）",
-                        delay.as_secs()
-                    ));
-                    set_state(&d, &mut info, SvcState::Backoff, None, None,
-                        Some(StopReason::SpawnError(e)));
+                    sys_line(
+                        &d,
+                        format!(
+                            "[traysv] 状态：BACKOFF（{}s 后第 {retries} 次重试）",
+                            delay.as_secs()
+                        ),
+                    );
+                    set_state(
+                        &d,
+                        &mut info,
+                        SvcState::Backoff,
+                        None,
+                        None,
+                        Some(StopReason::SpawnError(e)),
+                    );
                     backoff_until = TInstant::now() + delay;
                     state = SvcState::Backoff;
                     break;
@@ -214,10 +241,13 @@ pub(super) async fn supervise(d: SupervisorDeps, mut cmd_rx: mpsc::UnboundedRece
                                 (Some(sig), _) => {
                                     sys_line(&d, format!("[traysv] 进程被信号 {sig} 终止"))
                                 }
-                                (None, Some(c)) => sys_line(&d, format!(
-                                    "[traysv] 进程退出：exit code={c}（{}）",
-                                    reason.describe()
-                                )),
+                                (None, Some(c)) => sys_line(
+                                    &d,
+                                    format!(
+                                        "[traysv] 进程退出：exit code={c}（{}）",
+                                        reason.describe()
+                                    ),
+                                ),
                                 _ => sys_line(&d, "[traysv] 进程退出".to_string()),
                             }
                             let mut next = SvcState::Exited;
@@ -228,8 +258,10 @@ pub(super) async fn supervise(d: SupervisorDeps, mut cmd_rx: mpsc::UnboundedRece
                                     retries += 1;
                                     if retries > cfg.startretries {
                                         next = SvcState::Fatal;
-                                        sys_line(&d,
-                                            "[traysv] 状态：FATAL（自动重启重试耗尽）".to_string());
+                                        sys_line(
+                                            &d,
+                                            "[traysv] 状态：FATAL（自动重启重试耗尽）".to_string(),
+                                        );
                                     } else {
                                         next = SvcState::Backoff;
                                         let delay = backoff_delay(retries);
@@ -362,7 +394,10 @@ fn emit(
     }
     info.since_ms = now_ms();
     let _ = d.state_tx.send(info.clone());
-    d.bus.send(CoreEvent::StateChanged { id: d.id.clone(), info: info.clone() });
+    d.bus.send(CoreEvent::StateChanged {
+        id: d.id.clone(),
+        info: info.clone(),
+    });
 }
 
 /// 进入 STOPPING：发优雅信号、起超时计时（FR-3.3）

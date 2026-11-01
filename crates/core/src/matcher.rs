@@ -6,7 +6,7 @@
 //! - 每条 matcher 上限 max_items，新命中按 LRU 淘汰；
 //! - 打开链接前仅允许 http/https（FR-5.6）。
 
-use crate::config::MatcherConfig;
+use crate::config::{MatcherAction, MatcherConfig};
 use crate::events::MatchItem;
 use regex::Regex;
 use std::collections::hash_map::DefaultHasher;
@@ -16,11 +16,13 @@ use std::hash::{Hash, Hasher};
 /// 截断到 53 bit：跨 IPC 的整数必须是 JS 安全整数（DEV-CONVENTIONS §2），
 /// 完整 u64 会让前端 serde-wasm-bindgen 报 floating point 反序列化错。
 /// 截断仅影响碰撞概率（≤10 项/服务，2^53 下约 5e-15），hash 不落盘、可随版本变化。
-fn short_hash(idx: usize, label: &str, url: &Option<String>) -> u64 {
+/// 动作参与哈希：同一匹配改动作后旧项淘汰、新项生效（动作切换即生效）。
+fn short_hash(idx: usize, label: &str, url: &Option<String>, action: MatcherAction) -> u64 {
     let mut hasher = DefaultHasher::new();
     idx.hash(&mut hasher);
     label.hash(&mut hasher);
     url.hash(&mut hasher);
+    action.as_str().hash(&mut hasher);
     hasher.finish() & ((1 << 53) - 1)
 }
 
@@ -38,6 +40,7 @@ struct Item {
 
 struct CompiledMatcher {
     regex: Regex,
+    action: MatcherAction,
     template: String,
     max_items: u32,
 }
@@ -52,6 +55,7 @@ impl MatcherState {
             match Regex::new(&c.pattern) {
                 Ok(regex) => matchers.push(CompiledMatcher {
                     regex,
+                    action: c.action,
                     template: if c.template.is_empty() {
                         "🌐 打开 {0}".to_string()
                     } else {
@@ -62,7 +66,10 @@ impl MatcherState {
                 Err(e) => log::warn!("matcher 编译失败已跳过：{e}"),
             }
         }
-        Self { matchers, items: Vec::new() }
+        Self {
+            matchers,
+            items: Vec::new(),
+        }
     }
 
     /// 配置热更后整体替换规则（旧快捷项一并清空）
@@ -78,7 +85,11 @@ impl MatcherState {
                 // 捕获组 0 = 整体匹配，1..n = 分组
                 let mut groups: Vec<String> = Vec::new();
                 for gi in 0..caps.len() {
-                    groups.push(caps.get(gi).map(|g| g.as_str().to_string()).unwrap_or_default());
+                    groups.push(
+                        caps.get(gi)
+                            .map(|g| g.as_str().to_string())
+                            .unwrap_or_default(),
+                    );
                 }
                 let label = render_template(&m.template, &groups);
                 let url = groups
@@ -86,7 +97,7 @@ impl MatcherState {
                     .map(|g| trim_url(g))
                     .find(|g| g.starts_with("http://") || g.starts_with("https://"));
 
-                let hash = short_hash(idx, &label, &url);
+                let hash = short_hash(idx, &label, &url, m.action);
 
                 // 去重：已存在 → 触碰（移到队首）
                 if let Some(pos) = self.items.iter().position(|i| i.inner.hash == hash) {
@@ -96,7 +107,15 @@ impl MatcherState {
                 }
                 self.items.insert(
                     0,
-                    Item { matcher_idx: idx, inner: MatchItem { hash, label, url } },
+                    Item {
+                        matcher_idx: idx,
+                        inner: MatchItem {
+                            hash,
+                            action: m.action,
+                            label,
+                            url,
+                        },
+                    },
                 );
                 changed = true;
             }
@@ -185,7 +204,12 @@ mod tests {
     use super::*;
 
     fn m(pattern: &str, template: &str, max_items: u32) -> MatcherConfig {
-        MatcherConfig { pattern: pattern.into(), template: template.into(), max_items }
+        MatcherConfig {
+            pattern: pattern.into(),
+            action: MatcherAction::OpenButton,
+            template: template.into(),
+            max_items,
+        }
     }
 
     /// 内置 URL 规则（FR-5.3）：新建服务时由 UI 预填，测试里显式传入。
@@ -230,9 +254,49 @@ mod tests {
     fn hash_stays_within_js_safe_integer() {
         // DEV-CONVENTIONS §2：跨 IPC 整数 ≤ 2^53-1，否则前端反序列化失败
         for i in 0..1000usize {
-            let h = short_hash(i, &format!("label {i}"), &Some(format!("http://x/{i}")));
+            let h = short_hash(
+                i,
+                &format!("label {i}"),
+                &Some(format!("http://x/{i}")),
+                MatcherAction::OpenButton,
+            );
             assert!(h < (1u64 << 53), "hash {h} 超出 JS 安全整数范围");
         }
+    }
+
+    #[test]
+    fn action_carried_on_item_and_changes_hash() {
+        // 三段式（FR-5.1）：动作随命中项下发；同一匹配改动作 → 新 hash（旧项淘汰、新项生效）
+        let mut st = MatcherState::new(&[m(r"see (\S+)", "打开 {1}", 5)]);
+        st.feed_line("see https://a.example");
+        let items = st.items();
+        assert_eq!(items[0].action, MatcherAction::OpenButton);
+
+        let h_button = items[0].hash;
+        let h_notify = short_hash(
+            0,
+            "打开 a.example",
+            &Some("https://a.example".into()),
+            MatcherAction::Notify,
+        );
+        assert_ne!(h_button, h_notify, "动作参与哈希");
+    }
+
+    #[test]
+    fn notify_action_keeps_url_detection() {
+        // 通知动作同样探测捕获组 URL（托盘项可点击），正文 = 模版渲染
+        let cfg = MatcherConfig {
+            pattern: r"ready: (\S+)".into(),
+            action: MatcherAction::Notify,
+            template: "✅ 就绪 {1}".into(),
+            max_items: 5,
+        };
+        let mut st = MatcherState::new(&[cfg]);
+        st.feed_line("ready: https://x.example");
+        let items = st.items();
+        assert_eq!(items[0].action, MatcherAction::Notify);
+        assert_eq!(items[0].label, "✅ 就绪 https://x.example");
+        assert_eq!(items[0].url.as_deref(), Some("https://x.example"));
     }
 
     #[test]

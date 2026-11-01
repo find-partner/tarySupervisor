@@ -2,8 +2,8 @@
 //! 清空视图、打开日志目录；窗口关闭不影响后端捕获。
 
 use leptos::*;
-use wasm_bindgen::JsValue;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
 
 use crate::bridge;
 use crate::dto::{LogAppendedEv, LogLine, ServiceBriefOut, StateChangedEv};
@@ -32,31 +32,29 @@ pub fn LogPage(id: String) -> impl IntoView {
         set_lines.set(history);
 
         let id2 = id.clone();
-        let _ = bridge
-            ::listen("log-appended", move |payload| {
-                if let Ok(ev) = serde_wasm_bindgen::from_value::<LogAppendedEv>(payload) {
-                    if ev.id == id2 {
-                        set_lines.update(|v| {
-                            v.extend(ev.lines);
-                            if v.len() > 5000 {
-                                let drop = v.len() - 5000;
-                                v.drain(..drop);
-                            }
-                        });
-                    }
+        let _ = bridge::listen("log-appended", move |payload| {
+            if let Ok(ev) = serde_wasm_bindgen::from_value::<LogAppendedEv>(payload) {
+                if ev.id == id2 {
+                    set_lines.update(|v| {
+                        v.extend(ev.lines);
+                        if v.len() > 5000 {
+                            let drop = v.len() - 5000;
+                            v.drain(..drop);
+                        }
+                    });
                 }
-            })
-            .await;
-        let _ = bridge
-            ::listen("service-state-changed", move |payload| {
-                if let Ok(ev) = serde_wasm_bindgen::from_value::<StateChangedEv>(payload) {
-                    if ev.id == id {
-                        set_state.set(ev.info.state);
-                        set_pid.set(ev.info.pid);
-                    }
+            }
+        })
+        .await;
+        let _ = bridge::listen("service-state-changed", move |payload| {
+            if let Ok(ev) = serde_wasm_bindgen::from_value::<StateChangedEv>(payload) {
+                if ev.id == id {
+                    set_state.set(ev.info.state);
+                    set_pid.set(ev.info.pid);
                 }
-            })
-            .await;
+            }
+        })
+        .await;
     });
 
     // 自动滚动：内容变化时若处于跟随状态则滚到底部（FR-4.4）
@@ -71,7 +69,10 @@ pub fn LogPage(id: String) -> impl IntoView {
     });
 
     let on_scroll = move |e: web_sys::Event| {
-        let el = e.target().expect("scroll target").unchecked_into::<web_sys::Element>();
+        let el = e
+            .target()
+            .expect("scroll target")
+            .unchecked_into::<web_sys::Element>();
         let at_bottom = el.scroll_height() - el.scroll_top() - el.client_height() < 30;
         set_autoscroll.set(at_bottom);
     };
@@ -85,10 +86,13 @@ pub fn LogPage(id: String) -> impl IntoView {
             .map(|l| format!("[{}] [{}] {}", l.ts, l.stream, l.text))
             .collect::<Vec<_>>()
             .join("\n");
-        if let Ok(clipboard) =
-            js_sys::Reflect::get(&web_sys::window().expect("window").navigator(), &JsValue::from_str("clipboard"))
-        {
-            if let Ok(write_text) = js_sys::Reflect::get(&clipboard, &JsValue::from_str("writeText")) {
+        if let Ok(clipboard) = js_sys::Reflect::get(
+            &web_sys::window().expect("window").navigator(),
+            &JsValue::from_str("clipboard"),
+        ) {
+            if let Ok(write_text) =
+                js_sys::Reflect::get(&clipboard, &JsValue::from_str("writeText"))
+            {
                 if let Ok(cb) = write_text.dyn_into::<js_sys::Function>() {
                     let _ = cb.call1(&clipboard, &JsValue::from_str(&text));
                 }
@@ -98,7 +102,8 @@ pub fn LogPage(id: String) -> impl IntoView {
     let open_dir = move |_| {
         let id = id_dir.clone();
         spawn_local(async move {
-            let _ = bridge::invoke_unit_res("open_log_dir", Some(bridge::invoke_args_id(&id))).await;
+            let _ =
+                bridge::invoke_unit_res("open_log_dir", Some(bridge::invoke_args_id(&id))).await;
         });
     };
 

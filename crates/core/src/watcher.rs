@@ -14,13 +14,14 @@ use crate::service::ServiceManager;
 /// 启动监视线程；返回的 watcher 必须保持存活（由 ServiceManager 持有）。
 pub(super) fn spawn(path: PathBuf, weak: Weak<ServiceManager>) -> RecommendedWatcher {
     let (tx, rx) = mpsc::channel::<()>();
-    let mut watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-        if res.is_ok() {
-            // 只关心与配置文件相关的事件（同目录写临时文件也会触发 dir 事件，去抖后统一 reload）
-            let _ = tx.send(());
-        }
-    })
-    .expect("创建文件监听器失败");
+    let mut watcher =
+        notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+            if res.is_ok() {
+                // 只关心与配置文件相关的事件（同目录写临时文件也会触发 dir 事件，去抖后统一 reload）
+                let _ = tx.send(());
+            }
+        })
+        .expect("创建文件监听器失败");
 
     let watch_dir = path
         .parent()

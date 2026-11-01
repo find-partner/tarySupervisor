@@ -263,6 +263,7 @@ fn matcher_url_hit_via_real_output() {
     let mut url_svc = svc("t-url", "/bin/echo", &["Serving at http://127.0.0.1:8000"]);
     url_svc.matchers = vec![MatcherConfig {
         pattern: traysupervisor_core::config::BUILTIN_URL_PATTERN.to_string(),
+        action: traysupervisor_core::config::MatcherAction::OpenButton,
         template: traysupervisor_core::config::BUILTIN_URL_TEMPLATE.to_string(),
         max_items: 5,
     }];

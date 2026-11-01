@@ -26,15 +26,14 @@ impl Action {
     }
 }
 
-pub fn ctrl_bar(
-    selected_id: RwSignal<Option<String>>,
-    op_err: RwSignal<String>,
-) -> impl IntoView {
+pub fn ctrl_bar(selected_id: RwSignal<Option<String>>, op_err: RwSignal<String>) -> impl IntoView {
     let list = store::ensure();
 
     let brief = move || {
         let id = selected_id.get();
-        list.get().into_iter().find(|b| Some(&b.config.id) == id.as_ref())
+        list.get()
+            .into_iter()
+            .find(|b| Some(&b.config.id) == id.as_ref())
     };
 
     let do_action = move |id: String, action: Action| {

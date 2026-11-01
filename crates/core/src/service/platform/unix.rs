@@ -5,8 +5,11 @@ use std::sync::{Arc, Mutex};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::oneshot;
 
-use super::{default_cwd, resolve_command, spawn_pty_reader_thread, spawn_reader_thread, ExitInfo, Killer, RunCtx};
 use super::HubMsg;
+use super::{
+    default_cwd, resolve_command, spawn_pty_reader_thread, spawn_reader_thread, ExitInfo, Killer,
+    RunCtx,
+};
 use crate::config::ServiceConfig;
 
 fn signal_killer(pid: u32, sig: libc::c_int) -> Killer {
@@ -65,7 +68,12 @@ pub(super) fn spawn_pipe(
     let out = child.stdout.take();
     let err = child.stderr.take();
     if let Some(out) = out {
-        spawn_reader_thread(Box::new(out), crate::events::Stream::Out, false, hub_tx.clone());
+        spawn_reader_thread(
+            Box::new(out),
+            crate::events::Stream::Out,
+            false,
+            hub_tx.clone(),
+        );
     }
     if let Some(err) = err {
         spawn_reader_thread(
@@ -78,15 +86,26 @@ pub(super) fn spawn_pipe(
     let (exit_tx, exit_rx) = oneshot::channel();
     std::thread::spawn(move || {
         let info = match child.wait() {
-            Ok(st) => ExitInfo { code: st.code(), signal: st.signal() },
+            Ok(st) => ExitInfo {
+                code: st.code(),
+                signal: st.signal(),
+            },
             Err(e) => {
                 log::warn!("wait 失败：{e}");
-                ExitInfo { code: Some(-1), signal: None }
+                ExitInfo {
+                    code: Some(-1),
+                    signal: None,
+                }
             }
         };
         let _ = exit_tx.send(info);
     });
-    Ok(RunCtx { pid, killer: signal_killer(pid, libc::SIGTERM), exit: exit_rx, pty_writer: None })
+    Ok(RunCtx {
+        pid,
+        killer: signal_killer(pid, libc::SIGTERM),
+        exit: exit_rx,
+        pty_writer: None,
+    })
 }
 
 pub(super) fn spawn_pty(
@@ -97,7 +116,12 @@ pub(super) fn spawn_pty(
 ) -> Result<RunCtx, String> {
     let term = term.cloned().ok_or("PTY 模式缺少终端句柄")?;
     let pair = native_pty_system()
-        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| format!("打开 PTY 失败：{e}"))?;
     let (prog, args) = resolve_command(cfg);
     let mut cmd = CommandBuilder::new(&prog);
@@ -113,8 +137,14 @@ pub(super) fn spawn_pty(
     let pid = child.process_id().ok_or("PTY 子进程无 PID")?;
     // 父进程侧释放 slave，使 master 读到 EOF
     drop(pair.slave);
-    let reader = pair.master.try_clone_reader().map_err(|e| format!("PTY reader 失败：{e}"))?;
-    let writer = pair.master.take_writer().map_err(|e| format!("PTY writer 失败：{e}"))?;
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("PTY reader 失败：{e}"))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("PTY writer 失败：{e}"))?;
     spawn_pty_reader_thread(Box::new(reader), term, hub_tx.clone());
 
     let soft = child.clone_killer();
@@ -148,20 +178,37 @@ pub(super) fn spawn_pty(
             let r = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
             if r == pid as libc::pid_t {
                 if libc::WIFSIGNALED(status) {
-                    info = ExitInfo { code: None, signal: Some(libc::WTERMSIG(status)) };
+                    info = ExitInfo {
+                        code: None,
+                        signal: Some(libc::WTERMSIG(status)),
+                    };
                 } else if libc::WIFEXITED(status) {
-                    info = ExitInfo { code: Some(libc::WEXITSTATUS(status)), signal: None };
+                    info = ExitInfo {
+                        code: Some(libc::WEXITSTATUS(status)),
+                        signal: None,
+                    };
                 } else {
-                    info = ExitInfo { code: Some(-1), signal: None };
+                    info = ExitInfo {
+                        code: Some(-1),
+                        signal: None,
+                    };
                 }
                 break;
             }
             if r < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-                info = ExitInfo { code: Some(-1), signal: None };
+                info = ExitInfo {
+                    code: Some(-1),
+                    signal: None,
+                };
                 break;
             }
         }
         let _ = exit_tx.send(info);
     });
-    Ok(RunCtx { pid, killer, exit: exit_rx, pty_writer: Some(writer) })
+    Ok(RunCtx {
+        pid,
+        killer,
+        exit: exit_rx,
+        pty_writer: Some(writer),
+    })
 }

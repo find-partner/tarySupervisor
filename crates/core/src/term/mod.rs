@@ -40,13 +40,24 @@ pub struct Style {
 
 impl Default for Style {
     fn default() -> Self {
-        Self { fg: None, bg: None, bold: false, italic: false, underline: false, reverse: false }
+        Self {
+            fg: None,
+            bg: None,
+            bold: false,
+            italic: false,
+            underline: false,
+            reverse: false,
+        }
     }
 }
 
 impl Style {
     pub(super) fn is_plain(&self) -> bool {
-        self.fg.is_none() && self.bg.is_none() && !self.bold && !self.italic && !self.underline
+        self.fg.is_none()
+            && self.bg.is_none()
+            && !self.bold
+            && !self.italic
+            && !self.underline
             && !self.reverse
     }
 }
@@ -59,7 +70,10 @@ pub(super) struct Cell {
 
 impl Default for Cell {
     fn default() -> Self {
-        Self { ch: ' ', style: Style::default() }
+        Self {
+            ch: ' ',
+            style: Style::default(),
+        }
     }
 }
 

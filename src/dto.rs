@@ -68,10 +68,17 @@ pub struct PastedLineDto {
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct MatcherConfig {
     pub pattern: String,
+    /// 命中后的动作（三段式）：open_button / open_url / notify
+    #[serde(default = "default_action")]
+    pub action: String,
     #[serde(default)]
     pub template: String,
     #[serde(default = "default_max_items")]
     pub max_items: u32,
+}
+
+fn default_action() -> String {
+    "open_button".to_string()
 }
 
 fn default_max_items() -> u32 {
@@ -157,6 +164,10 @@ fn d10() -> u64 {
 pub struct MatchItem {
     /// JS 安全整数（≤ 2^53-1，core 生成时截断；见 docs/DEV-CONVENTIONS.md §2）
     pub hash: u64,
+    /// 命中后的动作（三段式，FR-5.1）：open_button / open_url / notify
+    #[serde(default)]
+    pub action: String,
+    /// 模板渲染后的文案（按钮文字 / 通知正文）
     pub label: String,
     pub url: Option<String>,
 }

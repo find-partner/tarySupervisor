@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use super::{load_app_config, parse_ini_str, save_app_config, to_ini_string};
 use crate::config::{
     diff_configs, AppConfig, Autorestart, EnvEntry, GlobalSettings, LogFilePolicy, LogPolicy,
-    MatcherConfig, PlatformDef, PlatformRegistry, PlatformVariant, ServiceConfig, SpawnMode,
+    MatcherAction, MatcherConfig, PlatformDef, PlatformRegistry, PlatformVariant, ServiceConfig,
+    SpawnMode,
 };
 
 const SAMPLE: &str = r#"
@@ -190,6 +191,7 @@ fn save_load_roundtrip() {
                 },
                 matchers: vec![MatcherConfig {
                     pattern: r"port (\d+)".into(),
+                    action: crate::config::MatcherAction::Notify,
                     template: "端口 {0}".into(),
                     max_items: 3,
                 }],
@@ -239,6 +241,24 @@ fn relative_logfile_resolved_against_base_dir() {
     let cfg = parse_ini_str(s, Some(dir.path())).unwrap();
     let f = cfg.services[0].log.file.as_ref().unwrap();
     assert_eq!(f.path, dir.path().join("logs/a.log"));
+}
+
+#[test]
+fn matcher_action_defaults_and_invalid_rejected() {
+    // 三段式（FR-5.1）：旧配置无 action 键 → open_button（行为不变）；非法值拒绝
+    let s = "[program:a]\ncommand=x\nmatcher.1.pattern=p\nmatcher.1.template=t\n";
+    let cfg = parse_ini_str(s, None).unwrap();
+    assert_eq!(
+        cfg.services[0].matchers[0].action,
+        MatcherAction::OpenButton
+    );
+
+    let explicit = "[program:a]\ncommand=x\nmatcher.1.pattern=p\nmatcher.1.action=open_url\n";
+    let cfg = parse_ini_str(explicit, None).unwrap();
+    assert_eq!(cfg.services[0].matchers[0].action, MatcherAction::OpenUrl);
+
+    let bad = "[program:a]\ncommand=x\nmatcher.1.pattern=p\nmatcher.1.action=boom\n";
+    assert!(parse_ini_str(bad, None).unwrap_err().contains("未知动作"));
 }
 
 #[test]

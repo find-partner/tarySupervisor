@@ -69,7 +69,8 @@
 | shell | bool | false | true：经用户登录 shell（`$SHELL -ilc`）启动，继承其配置环境（PATH、nvm 等）；见 §3.5 | FR-2.1 |
 | logfile_compress | bool | false | 轮转出的旧分块 gzip 压缩 | FR-2.2 |
 | matcher.N.pattern | regex | — | 第 N 条 Matcher 正则（Rust regex 语法），N 从 1 连续递增，顺序即匹配顺序 | FR-5.1 |
-| matcher.N.template | string | `🌐 打开 {0}` | 快捷项文案，`{0} {1}` 引用捕获组 | FR-5.1 |
+| matcher.N.action | enum | `open_button` | 命中后的动作（三段式）：`open_button` 托盘加"打开"按钮（点击才打开）/ `open_url` 命中即自动打开捕获到的 URL / `notify` 命中弹系统通知（正文=模版渲染）。动作仅对新出现的命中执行一次；托盘菜单始终保留命中项 | FR-5.1 |
+| matcher.N.template | string | `🌐 打开 {0}` | 动作文案（按钮文字 / 通知正文），`{0} {1}` 引用捕获组；URL 恒从捕获组自动探测（任一捕获组以 http(s) 开头） | FR-5.1 |
 | matcher.N.max_items | int | 5 | 该条快捷项上限（≤ 10，LRU 淘汰） | FR-5.4 |
 | command.&lt;平台&gt; | string | 空 | **平台命令行变体**（FR-2.13）：完整命令行单行，切分规则同 §3.4；`<平台>` ∈ 平台注册表（§2）；未命中的平台用默认 `command` | FR-2.13 |
 | directory.&lt;平台&gt; | 路径 | 空 | 平台工作目录变体，支持 `~` 展开 | FR-2.13 |
@@ -127,14 +128,17 @@ Matcher 是本项目的特有功能（日志正则 → 托盘快捷项），以�
 
 ```ini
 matcher.1.pattern=https?://\S+
+matcher.1.action=open_button
 matcher.1.template=🌐 打开 {0}
 matcher.1.max_items=5
 matcher.2.pattern=Listening on port (\d+)
-matcher.2.template=端口 {0}
+matcher.2.action=notify
+matcher.2.template=端口 {0} 已就绪
 ```
 
 - N 必须**从 1 开始连续递增**，顺序即匹配顺序；跳号视为校验错误。
 - 节内无任何 `matcher.N.*` 键即视为**无规则**：运行期不会隐式启用任何内置规则（FR-5.3 的内置 URL 规则仅由新建服务向导预填落盘）。
+- `action` 键缺省视为 `open_button`（旧配置行为不变）；非法值视为解析错误。
 - 每服务 Matcher 条数上限 20；`max_items` ≤ 10（FR-5.4）。
 - 正则在保存/加载时编译校验（FR-2.4 / FR-5.5）。
 
@@ -163,6 +167,7 @@ stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=3
 logfile_compress=true
 matcher.1.pattern=https?://\S+
+matcher.1.action=open_button
 matcher.1.template=🌐 打开 {0}
 matcher.1.max_items=5
 
@@ -213,7 +218,7 @@ redirect_stderr=false
 | `env: Vec<EnvEntry { key, value, expand }>` | `environment=K="v", K2="!v2"`（`!` 前缀 = expand） |
 | `stop_timeout_secs` | `stopwaitsecs` |
 | `log: LogPolicy { path, max_bytes, max_files, compress }` | `stdout_logfile` / `stdout_logfile_maxbytes` / `stdout_logfile_backups` / `logfile_compress` |
-| `matchers: Vec<MatcherConfig>` | `matcher.N.pattern / template / max_items` |
+| `matchers: Vec<MatcherConfig>` | `matcher.N.pattern / action / template / max_items` |
 | `autorestart: No \| OnFailure \| Always`（Rust 枚举） | 字符串枚举 `no \| on-failure \| always` |
 
 - **内存语义模型不变**：`ServiceConfig` 等结构体保留，仅文件编解码层从 TOML 换为 INI 映射（对照表即上表）；GUI 内部仍以"程序 + 参数数组、env 有序表"编辑，保存时序列化为本规范。

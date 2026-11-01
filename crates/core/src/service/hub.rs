@@ -44,11 +44,17 @@ pub(super) async fn hub_task(
             _ = tokio::time::sleep(FLUSH_INTERVAL), if flush_due => {}
         }
         if !batch.is_empty() && (batch.len() >= 64 || last_flush.elapsed() >= FLUSH_INTERVAL) {
-            bus.send(CoreEvent::LogAppended { id: id.clone(), lines: std::mem::take(&mut batch) });
+            bus.send(CoreEvent::LogAppended {
+                id: id.clone(),
+                lines: std::mem::take(&mut batch),
+            });
             if matcher_dirty {
                 matcher_dirty = false;
                 let items = matcher.lock().unwrap().items();
-                bus.send(CoreEvent::MatcherHit { svc_id: id.clone(), items });
+                bus.send(CoreEvent::MatcherHit {
+                    svc_id: id.clone(),
+                    items,
+                });
             }
             last_flush = std::time::Instant::now();
         }

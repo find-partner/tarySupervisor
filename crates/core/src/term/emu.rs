@@ -15,7 +15,14 @@ pub struct TermEmulator {
 impl TermEmulator {
     pub fn new(cols: u16, rows: u16) -> Self {
         let grid = vec![vec![Cell::default(); cols as usize]; rows as usize];
-        Self { cols, rows, grid, cursor: (0, 0), style: Style::default(), saved: None }
+        Self {
+            cols,
+            rows,
+            grid,
+            cursor: (0, 0),
+            style: Style::default(),
+            saved: None,
+        }
     }
 
     pub fn size(&self) -> (u16, u16) {
@@ -40,19 +47,30 @@ impl TermEmulator {
                     let st = effective_style_of(&cell.style);
                     if Some(&st) != cur_style.as_ref() {
                         if !cur_text.is_empty() {
-                            runs.push(Run { t: std::mem::take(&mut cur_text), s: cur_style.take().unwrap_or_default() });
+                            runs.push(Run {
+                                t: std::mem::take(&mut cur_text),
+                                s: cur_style.take().unwrap_or_default(),
+                            });
                         }
                         cur_style = Some(st);
                     }
                     cur_text.push(cell.ch);
                 }
                 if !cur_text.is_empty() {
-                    runs.push(Run { t: cur_text, s: cur_style.unwrap_or_default() });
+                    runs.push(Run {
+                        t: cur_text,
+                        s: cur_style.unwrap_or_default(),
+                    });
                 }
                 runs
             })
             .collect();
-        TermScreen { rows: self.rows, cols: self.cols, cursor: self.cursor, lines }
+        TermScreen {
+            rows: self.rows,
+            cols: self.cols,
+            cursor: self.cursor,
+            lines,
+        }
     }
 
     pub(super) fn blank_row(&self) -> Vec<Cell> {
@@ -99,9 +117,21 @@ impl TermEmulator {
         let row = &mut self.grid[r as usize];
         let blank = Cell::default();
         match mode {
-            0 => for i in c as usize..row.len() { row[i] = blank.clone(); },
-            1 => for i in 0..=c.min(self.cols - 1) as usize { row[i] = blank.clone(); },
-            _ => for i in 0..row.len() { row[i] = blank.clone(); },
+            0 => {
+                for i in c as usize..row.len() {
+                    row[i] = blank.clone();
+                }
+            }
+            1 => {
+                for i in 0..=c.min(self.cols - 1) as usize {
+                    row[i] = blank.clone();
+                }
+            }
+            _ => {
+                for i in 0..row.len() {
+                    row[i] = blank.clone();
+                }
+            }
         }
     }
 
@@ -141,7 +171,9 @@ impl TermEmulator {
                 3 => self.style.italic = true,
                 4 => self.style.underline = true,
                 7 => self.style.reverse = true,
-                22 => { self.style.bold = false; }
+                22 => {
+                    self.style.bold = false;
+                }
                 23 => self.style.italic = false,
                 24 => self.style.underline = false,
                 27 => self.style.reverse = false,
@@ -157,7 +189,9 @@ impl TermEmulator {
                         codes.get(i + 2).map(|n| Color::Idx(*n as u8))
                     } else if codes.get(i + 1) == Some(&2) {
                         match (codes.get(i + 2), codes.get(i + 3), codes.get(i + 4)) {
-                            (Some(&r), Some(&g), Some(&b)) => Some(Color::Rgb(r as u8, g as u8, b as u8)),
+                            (Some(&r), Some(&g), Some(&b)) => {
+                                Some(Color::Rgb(r as u8, g as u8, b as u8))
+                            }
                             _ => None,
                         }
                     } else {
@@ -168,7 +202,13 @@ impl TermEmulator {
                     } else {
                         self.style.bg = color;
                     }
-                    let consumed = if codes.get(i + 1) == Some(&5) { 2 } else if codes.get(i + 1) == Some(&2) { 4 } else { 0 };
+                    let consumed = if codes.get(i + 1) == Some(&5) {
+                        2
+                    } else if codes.get(i + 1) == Some(&2) {
+                        4
+                    } else {
+                        0
+                    };
                     i += consumed;
                 }
                 _ => {}

@@ -86,6 +86,7 @@ pub fn to_ini_string(cfg: &AppConfig) -> String {
         }
         for (i, m) in svc.matchers.iter().enumerate() {
             out.push_str(&format!("matcher.{}.pattern={}\n", i + 1, m.pattern));
+            out.push_str(&format!("matcher.{}.action={}\n", i + 1, m.action.as_str()));
             out.push_str(&format!("matcher.{}.template={}\n", i + 1, m.template));
             out.push_str(&format!("matcher.{}.max_items={}\n", i + 1, m.max_items));
         }

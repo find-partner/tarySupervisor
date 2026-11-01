@@ -36,7 +36,12 @@ impl LogStore {
         file_policy: Option<&crate::config::LogFilePolicy>,
     ) -> Result<Self, String> {
         let file = match file_policy {
-            Some(f) => Some(RotatingFile::new(&f.path, f.max_bytes, f.max_files, f.compress)?),
+            Some(f) => Some(RotatingFile::new(
+                &f.path,
+                f.max_bytes,
+                f.max_files,
+                f.compress,
+            )?),
             None => None,
         };
         Ok(Self {
@@ -58,7 +63,12 @@ impl LogStore {
         policy: Option<&crate::config::LogFilePolicy>,
     ) -> Result<(), String> {
         let new_file = match policy {
-            Some(f) => Some(RotatingFile::new(&f.path, f.max_bytes, f.max_files, f.compress)?),
+            Some(f) => Some(RotatingFile::new(
+                &f.path,
+                f.max_bytes,
+                f.max_files,
+                f.compress,
+            )?),
             None => None,
         };
         *self.file.lock().unwrap() = new_file;
@@ -130,7 +140,11 @@ impl LogStore {
 
     /// 日志文件路径（「打开日志目录」用）
     pub fn file_path(&self) -> Option<PathBuf> {
-        self.file.lock().unwrap().as_ref().map(|f| f.path().to_path_buf())
+        self.file
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|f| f.path().to_path_buf())
     }
 }
 
@@ -259,7 +273,10 @@ mod tests {
         };
         let s = LogStore::new(1000, Some(&policy)).unwrap();
         for i in 0..100 {
-            s.push(Stream::Out, &format!("log line number {i:04} padding padding"));
+            s.push(
+                Stream::Out,
+                &format!("log line number {i:04} padding padding"),
+            );
         }
         // 主文件 + 若干分块；分块中存在 .gz
         let entries: Vec<String> = std::fs::read_dir(dir.path())

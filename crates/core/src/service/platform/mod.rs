@@ -58,7 +58,10 @@ impl Killer {
         graceful: impl Fn() + Send + Sync + 'static,
         force: impl Fn() + Send + Sync + 'static,
     ) -> Self {
-        Self { graceful: Arc::new(graceful), force: Arc::new(force) }
+        Self {
+            graceful: Arc::new(graceful),
+            force: Arc::new(force),
+        }
     }
 
     pub fn graceful(&self) {
@@ -81,9 +84,9 @@ pub struct RunCtx {
 }
 
 pub(crate) fn default_cwd(cfg: &ServiceConfig) -> PathBuf {
-    cfg.cwd.clone().unwrap_or_else(|| {
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
-    })
+    cfg.cwd
+        .clone()
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
 }
 
 /// spawn 总入口：按 spawn_mode 分派；读线程在此启动并把行送入 hub。
@@ -112,9 +115,13 @@ pub(super) fn resolve_command(cfg: &ServiceConfig) -> (String, Vec<String>) {
         .chain(cfg.args.iter().map(String::as_str))
         .map(|tok| {
             #[cfg(unix)]
-            { crate::config::shell_quote_posix(tok) }
+            {
+                crate::config::shell_quote_posix(tok)
+            }
             #[cfg(windows)]
-            { winapi::quote_arg(tok) }
+            {
+                winapi::quote_arg(tok)
+            }
         })
         .collect::<Vec<_>>()
         .join(" ");
@@ -147,7 +154,11 @@ pub(super) fn spawn_reader_thread(
             match read.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let effective = if tag_as_out { crate::events::Stream::Out } else { stream };
+                    let effective = if tag_as_out {
+                        crate::events::Stream::Out
+                    } else {
+                        stream
+                    };
                     for line in decoder.feed(&buf[..n]) {
                         if hub_tx.send(HubMsg::Line(effective, line)).is_err() {
                             return;
@@ -162,7 +173,11 @@ pub(super) fn spawn_reader_thread(
         }
         if let Some(line) = decoder.finish() {
             let _ = hub_tx.send(HubMsg::Line(
-                if tag_as_out { crate::events::Stream::Out } else { stream },
+                if tag_as_out {
+                    crate::events::Stream::Out
+                } else {
+                    stream
+                },
                 line,
             ));
         }
@@ -183,7 +198,10 @@ pub(super) fn spawn_pty_reader_thread(
                 Ok(n) => {
                     term.feed(&buf[..n]);
                     for line in decoder.feed(&buf[..n]) {
-                        if hub_tx.send(HubMsg::Line(crate::events::Stream::Out, line)).is_err() {
+                        if hub_tx
+                            .send(HubMsg::Line(crate::events::Stream::Out, line))
+                            .is_err()
+                        {
                             return;
                         }
                     }

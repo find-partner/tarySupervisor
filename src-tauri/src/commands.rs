@@ -9,8 +9,8 @@ use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 use traysupervisor_core::config::{
     join_command_line, parse_byte_size, split_command_line, split_env_prefixed_line, system_var,
-    validate_app, Autorestart, EnvEntry, LogFilePolicy, LogPolicy, MatcherConfig, PlatformDef,
-    PlatformRegistry, PlatformVariant, ServiceConfig, SpawnMode,
+    validate_app, Autorestart, EnvEntry, LogFilePolicy, LogPolicy, MatcherAction, MatcherConfig,
+    PlatformDef, PlatformRegistry, PlatformVariant, ServiceConfig, SpawnMode,
 };
 use traysupervisor_core::events::LogLine;
 use traysupervisor_core::expand_tilde;
@@ -81,10 +81,17 @@ pub struct PlatformVariantIn {
 #[derive(Debug, Clone, Deserialize)]
 pub struct MatcherIn {
     pub pattern: String,
+    /// 命中后的动作（open_button / open_url / notify）；缺省 open_button（旧前端兼容）
+    #[serde(default = "default_action")]
+    pub action: String,
     #[serde(default)]
     pub template: String,
     #[serde(default = "d5")]
     pub max_items: u32,
+}
+
+fn default_action() -> String {
+    "open_button".to_string()
 }
 
 fn d5() -> u32 {
@@ -231,6 +238,7 @@ fn build_service_config(input: &ServiceInput) -> Result<ServiceConfig, Vec<Strin
             .iter()
             .map(|m| MatcherConfig {
                 pattern: m.pattern.clone(),
+                action: m.action.parse().unwrap_or(MatcherAction::OpenButton),
                 template: if m.template.is_empty() {
                     "🌐 打开 {0}".to_string()
                 } else {

@@ -15,7 +15,12 @@ pub struct RotatingFile {
 
 impl RotatingFile {
     /// `max_bytes == 0` 表示不轮转（CONFIG-SPEC stdout_logfile_maxbytes=0 语义）。
-    pub fn new(path: &Path, max_bytes: u64, max_files: u32, compress: bool) -> Result<Self, String> {
+    pub fn new(
+        path: &Path,
+        max_bytes: u64,
+        max_files: u32,
+        compress: bool,
+    ) -> Result<Self, String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("创建日志目录失败：{e}"))?;
         }
@@ -36,7 +41,10 @@ impl RotatingFile {
             compression,
             None,
         );
-        Ok(Self { inner, path: path.to_path_buf() })
+        Ok(Self {
+            inner,
+            path: path.to_path_buf(),
+        })
     }
 
     pub fn path(&self) -> &Path {

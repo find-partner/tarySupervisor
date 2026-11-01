@@ -20,6 +20,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         // FR-1.9 单实例：二次启动唤醒/聚焦设置窗口
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

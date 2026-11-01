@@ -9,12 +9,13 @@
 //! - 状态色圆点用 IconMenuItem 承载（FR-1.5），tooltip =「运行中 n / 共 m 个
 //!   服务」（FR-1.1）；数据源与设置页一致（ServiceManager::list()，FR-1.10）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use tauri::menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Wry};
+use traysupervisor_core::config::MatcherAction;
 use traysupervisor_core::events::{CoreEvent, MatchItem, StateInfo, SvcState};
 use traysupervisor_core::ServiceManager;
 
@@ -59,7 +60,10 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         builder = builder.icon(icon.clone());
     }
     let tray = builder.build(app)?;
-    app.manage(TrayHandle { tray, inner: Mutex::new(inner) });
+    app.manage(TrayHandle {
+        tray,
+        inner: Mutex::new(inner),
+    });
 
     // 事件 → 分类分流（FR-1.6 / D-7）：状态与 Matcher 就地更新，配置变更全量重建。
     // 与设置页共用同一事件流与数据源（FR-1.10）；LogAppended / TermFrame 等高频
@@ -67,6 +71,8 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut rx = mgr.events();
+        // 每服务已见快捷项 hash：仅"新出现"的命中执行一次动作（FR-5.1；LRU 触碰不重触发）
+        let mut seen: HashMap<String, HashSet<u64>> = HashMap::new();
         loop {
             let ev = match rx.recv().await {
                 Ok(ev) => ev,
@@ -75,7 +81,10 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             };
             match ev {
                 CoreEvent::StateChanged { id, info } => apply_state(&app2, &mgr, &id, &info),
-                CoreEvent::MatcherHit { svc_id, items } => apply_matchers(&app2, &svc_id, &items),
+                CoreEvent::MatcherHit { svc_id, items } => {
+                    run_match_actions(&app2, &mgr, &svc_id, &items, &mut seen);
+                    apply_matchers(&app2, &svc_id, &items);
+                }
                 CoreEvent::ConfigChanged { .. } => rebuild_all(&app2, &mgr),
                 _ => {}
             }
@@ -86,7 +95,11 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn tooltip_text(mgr: &ServiceManager) -> String {
-    format!("TraySupervisor：运行中 {} / 共 {} 个服务", mgr.running_count(), mgr.total_count())
+    format!(
+        "TraySupervisor：运行中 {} / 共 {} 个服务",
+        mgr.running_count(),
+        mgr.total_count()
+    )
 }
 
 /// 状态行文案（FR-1.4 ①）
@@ -99,8 +112,14 @@ fn status_text(st: SvcState, pid: Option<u32>) -> String {
 
 /// 启动/停止/重启的启用位（FR-1.4 ②）
 fn action_flags(st: SvcState) -> (bool, bool, bool) {
-    let can_start = matches!(st, SvcState::Stopped | SvcState::Exited | SvcState::Fatal | SvcState::Backoff);
-    let can_stop = matches!(st, SvcState::Starting | SvcState::Running | SvcState::Stopping | SvcState::Backoff);
+    let can_start = matches!(
+        st,
+        SvcState::Stopped | SvcState::Exited | SvcState::Fatal | SvcState::Backoff
+    );
+    let can_stop = matches!(
+        st,
+        SvcState::Starting | SvcState::Running | SvcState::Stopping | SvcState::Backoff
+    );
     let can_restart = !matches!(st, SvcState::Stopping);
     (can_start, can_stop, can_restart)
 }
@@ -122,7 +141,10 @@ fn dot_icon(state: SvcState) -> tauri::image::Image<'static> {
 }
 
 /// 全量构建菜单（setup 与服务集合变化时的重建共用），返回持久句柄。
-fn build_menu(app: &AppHandle, mgr: &Arc<ServiceManager>) -> Result<TrayInner, Box<dyn std::error::Error>> {
+fn build_menu(
+    app: &AppHandle,
+    mgr: &Arc<ServiceManager>,
+) -> Result<TrayInner, Box<dyn std::error::Error>> {
     let menu = Menu::new(app)?;
     let mut submenus = HashMap::new();
     let mut items = HashMap::new();
@@ -148,27 +170,59 @@ fn build_menu(app: &AppHandle, mgr: &Arc<ServiceManager>) -> Result<TrayInner, B
 
         // ② 启动/停止/重启（按状态启用/禁用）
         let (can_start, can_stop, can_restart) = action_flags(st);
-        let start = MenuItem::with_id(app, format!("svc:{id}:start"), "启动", can_start, None::<&str>)?;
-        let stop = MenuItem::with_id(app, format!("svc:{id}:stop"), "停止", can_stop, None::<&str>)?;
-        let restart = MenuItem::with_id(app, format!("svc:{id}:restart"), "重启", can_restart, None::<&str>)?;
+        let start = MenuItem::with_id(
+            app,
+            format!("svc:{id}:start"),
+            "启动",
+            can_start,
+            None::<&str>,
+        )?;
+        let stop = MenuItem::with_id(
+            app,
+            format!("svc:{id}:stop"),
+            "停止",
+            can_stop,
+            None::<&str>,
+        )?;
+        let restart = MenuItem::with_id(
+            app,
+            format!("svc:{id}:restart"),
+            "重启",
+            can_restart,
+            None::<&str>,
+        )?;
         submenu.append(&start)?;
         submenu.append(&stop)?;
         submenu.append(&restart)?;
 
         // ③④ 查看日志 / 终端视图
         submenu.append(&PredefinedMenuItem::separator(app)?)?;
-        let log_item = MenuItem::with_id(app, format!("svc:{id}:log"), "查看日志", true, None::<&str>)?;
+        let log_item =
+            MenuItem::with_id(app, format!("svc:{id}:log"), "查看日志", true, None::<&str>)?;
         submenu.append(&log_item)?;
         let term_label = if brief.config.spawn_mode == traysupervisor_core::config::SpawnMode::Pty {
             "终端视图"
         } else {
             "终端视图（纯文本）"
         };
-        let term_item = MenuItem::with_id(app, format!("svc:{id}:term"), term_label, true, None::<&str>)?;
+        let term_item = MenuItem::with_id(
+            app,
+            format!("svc:{id}:term"),
+            term_label,
+            true,
+            None::<&str>,
+        )?;
         submenu.append(&term_item)?;
 
         // ⑤ Matcher 快捷项（动态生成，FR-5）
-        let mut svc = SvcItems { status, start, stop, restart, matcher_sep: None, matcher: vec![] };
+        let mut svc = SvcItems {
+            status,
+            start,
+            stop,
+            restart,
+            matcher_sep: None,
+            matcher: vec![],
+        };
         if !brief.match_items.is_empty() {
             let sep = PredefinedMenuItem::separator(app)?;
             submenu.append(&sep)?;
@@ -195,10 +249,18 @@ fn build_menu(app: &AppHandle, mgr: &Arc<ServiceManager>) -> Result<TrayInner, B
     let quit = MenuItem::with_id(app, "app:quit", "退出", true, None::<&str>)?;
     menu.append(&quit)?;
 
-    Ok(TrayInner { menu, submenus, items })
+    Ok(TrayInner {
+        menu,
+        submenus,
+        items,
+    })
 }
 
-fn matcher_item(app: &AppHandle, svc_id: &str, item: &MatchItem) -> Result<MenuItem<Wry>, tauri::Error> {
+fn matcher_item(
+    app: &AppHandle,
+    svc_id: &str,
+    item: &MatchItem,
+) -> Result<MenuItem<Wry>, tauri::Error> {
     MenuItem::with_id(
         app,
         format!("match:{svc_id}:{}", item.hash),
@@ -210,7 +272,9 @@ fn matcher_item(app: &AppHandle, svc_id: &str, item: &MatchItem) -> Result<MenuI
 
 /// StateChanged → 就地更新（FR-1.6：不替换菜单对象，展开中的菜单不消失）
 fn apply_state(app: &AppHandle, mgr: &Arc<ServiceManager>, id: &str, info: &StateInfo) {
-    let Some(handle) = app.try_state::<TrayHandle>() else { return };
+    let Some(handle) = app.try_state::<TrayHandle>() else {
+        return;
+    };
     let missing = {
         let inner = handle.inner.lock().unwrap();
         match inner.items.get(id) {
@@ -239,12 +303,20 @@ fn apply_state(app: &AppHandle, mgr: &Arc<ServiceManager>, id: &str, info: &Stat
 /// MatcherHit 仅在快捷项集合实际变化时发出（matcher 去重 + LRU）；重启清空
 /// （FR-5.5）时 hits 为空 → 移除全组与分隔线。
 fn apply_matchers(app: &AppHandle, svc_id: &str, hits: &[MatchItem]) {
-    let Some(handle) = app.try_state::<TrayHandle>() else { return };
+    let Some(handle) = app.try_state::<TrayHandle>() else {
+        return;
+    };
     let mut inner = handle.inner.lock().unwrap();
     // 先解构出字段（经 Deref 的整对象借用无法同时可变/不可变借用两个字段）
-    let TrayInner { submenus, items, .. } = &mut *inner;
-    let Some(sub) = submenus.get(svc_id) else { return };
-    let Some(svc) = items.get_mut(svc_id) else { return };
+    let TrayInner {
+        submenus, items, ..
+    } = &mut *inner;
+    let Some(sub) = submenus.get(svc_id) else {
+        return;
+    };
+    let Some(svc) = items.get_mut(svc_id) else {
+        return;
+    };
     for old in svc.matcher.drain(..) {
         let _ = sub.remove(&old);
     }
@@ -271,10 +343,63 @@ fn apply_matchers(app: &AppHandle, svc_id: &str, hits: &[MatchItem]) {
     }
 }
 
+/// MatcherHit → 执行"新出现"命中的动作（FR-5.1 三段式：正则 + 动作 + 参数模版）：
+/// open_url 命中即自动打开（is_safe_url 校验）、notify 弹系统通知；
+/// open_button 仅托盘留项（现状行为）。seen 记录每服务已见 hash——
+/// LRU 触碰不重触发；服务重启清空后重新命中会再次触发（命中即动作的语义）。
+fn run_match_actions(
+    app: &AppHandle,
+    mgr: &Arc<ServiceManager>,
+    svc_id: &str,
+    items: &[MatchItem],
+    seen: &mut HashMap<String, HashSet<u64>>,
+) {
+    let prev = seen.remove(svc_id).unwrap_or_default();
+    for item in items {
+        if prev.contains(&item.hash) {
+            continue;
+        }
+        match item.action {
+            MatcherAction::OpenButton => {}
+            MatcherAction::OpenUrl => {
+                if let Some(url) = &item.url {
+                    if traysupervisor_core::matcher::is_safe_url(url) {
+                        use tauri_plugin_opener::OpenerExt;
+                        if let Err(e) = app.opener().open_url(url, None::<&str>) {
+                            log::warn!("自动打开链接失败：{e}");
+                        }
+                    } else {
+                        log::warn!("拒绝非 http/https 链接：{url}");
+                    }
+                }
+            }
+            MatcherAction::Notify => notify_match(app, mgr, svc_id, &item.label),
+        }
+    }
+    seen.insert(svc_id.to_string(), items.iter().map(|i| i.hash).collect());
+}
+
+/// 系统通知（notify 动作）：标题 = 服务显示名，正文 = 模版渲染文案。
+/// macOS 未授权通知时发送失败仅记日志（Windows/Linux 正常弹出）。
+fn notify_match(app: &AppHandle, mgr: &Arc<ServiceManager>, svc_id: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    let title = mgr
+        .list()
+        .into_iter()
+        .find(|b| b.config.id == svc_id)
+        .map(|b| b.config.display_name().to_string())
+        .unwrap_or_else(|| svc_id.to_string());
+    if let Err(e) = app.notification().builder().title(&title).body(body).show() {
+        log::warn!("通知发送失败：{e}");
+    }
+}
+
 /// ConfigChanged（服务集合变化）→ 全量重建并替换菜单（FR-1.6 的唯一重建路径）。
 /// 此时菜单若在展开中会被系统关闭——可接受：该事件仅在用户编辑配置时发生。
 fn rebuild_all(app: &AppHandle, mgr: &Arc<ServiceManager>) {
-    let Some(handle) = app.try_state::<TrayHandle>() else { return };
+    let Some(handle) = app.try_state::<TrayHandle>() else {
+        return;
+    };
     match build_menu(app, mgr) {
         Ok(new) => {
             let mut guard = handle.inner.lock().unwrap();
@@ -291,11 +416,17 @@ fn rebuild_all(app: &AppHandle, mgr: &Arc<ServiceManager>) {
 }
 
 fn handle_menu_event(app: &AppHandle, event_id: &str) {
-    let Some(state) = app.try_state::<AppState>() else { return };
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
     let mgr = state.mgr.clone();
 
     let parts: Vec<&str> = event_id.splitn(3, ':').collect();
-    match (parts.first().copied(), parts.get(1).copied(), parts.get(2).copied()) {
+    match (
+        parts.first().copied(),
+        parts.get(1).copied(),
+        parts.get(2).copied(),
+    ) {
         (Some("app"), Some("settings"), _) => wins::open_settings(app),
         (Some("app"), Some("quit"), _) => quit_flow(app, &mgr),
         (Some("svc"), Some(id), Some(action)) => match action {
@@ -361,7 +492,10 @@ fn quit_flow(app: &AppHandle, mgr: &Arc<ServiceManager>) {
         .message(msg)
         .title("退出确认")
         .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom("退出".to_string(), "取消".to_string()))
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "退出".to_string(),
+            "取消".to_string(),
+        ))
         .show(move |confirmed| {
             if confirmed {
                 // ExitRequested(code=None) 已被拦截；显式 exit(code=Some) 触发 FR-3.7 停止流程
