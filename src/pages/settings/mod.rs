@@ -12,6 +12,7 @@ mod edit;
 mod empty;
 mod form;
 mod panels;
+mod update;
 mod wizard;
 
 use leptos::*;

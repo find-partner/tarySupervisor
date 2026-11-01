@@ -118,6 +118,31 @@ pub fn invoke_args_url(url: &str) -> JsValue {
     obj.into()
 }
 
+/// window.fetch(url) → JSON 值（更新检查 FR-2.15 直连 GitHub Releases API，CORS 开放）。
+/// fetch 经 Reflect 调用（不依赖 web-sys 的 Request 特性门），响应按 web_sys::Response 处理。
+pub async fn fetch_json(url: &str) -> Result<JsValue, String> {
+    let window = web_sys::window().ok_or_else(|| "无法获取 window".to_string())?;
+    let fetch = js_sys::Reflect::get(&window, &JsValue::from_str("fetch"))
+        .map_err(|_| "window.fetch 不可用".to_string())?
+        .dyn_into::<js_sys::Function>()
+        .map_err(|_| "window.fetch 不是函数".to_string())?;
+    let promise = fetch
+        .call1(&window, &JsValue::from_str(url))
+        .map_err(|e| js_str(&e))?
+        .dyn_into::<js_sys::Promise>()
+        .map_err(|_| "fetch 未返回 Promise".to_string())?;
+    let resp = JsFuture::from(promise).await.map_err(|e| js_str(&e))?;
+    let resp = resp
+        .dyn_into::<web_sys::Response>()
+        .map_err(|_| "fetch 响应类型异常".to_string())?;
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    JsFuture::from(resp.json().map_err(|e| js_str(&e))?)
+        .await
+        .map_err(|e| js_str(&e))
+}
+
 pub fn invoke_args_log(id: &str, since: u64, limit: usize) -> JsValue {
     let obj = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("id"), &JsValue::from_str(id));

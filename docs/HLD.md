@@ -220,6 +220,7 @@ stderr pipe ─┘                                    ├─► file-rotate sink
   - **新建向导**：① 基本设置 → ② 环境变量 → ③ 日志 → ④ 快捷项，可上一步/跳过，最后"保存并完成"；ID 与命令行非空方可离开第①步。
 - **保存生效提示（SRS FR-2.10）**：保存成功后若服务 RUNNING/STARTING → 编辑区横幅"需重启生效" + "立即重启"按钮（`restart_service`）。
 - **关于栏（SRS FR-2.14 / D-18）**：设置窗口底部常驻一行——应用名 + 版本号（`get_app_info`，与安装包同源）、平台/构建类型与仓库链接；链接点击经 `open_external_url` 打开（http/https 校验复用 `matcher::is_safe_url`），不使用 `<a href>`（避免 WebView 内导航劫持窗口）。
+- **更新检查（SRS FR-2.15 / D-19）**：关于栏加载即经 **GitHub Releases API 前端直连**（`/repos/<owner>/<repo>/releases/latest`，CORS 开放、无新增后端命令与依赖）比对 `get_app_info` 版本；仓库 `owner/repo` 由同源 repository 字段解析（D-18）；localStorage 24h 节流缓存；有新版本时关于栏提示并跳转 Release 页，失败静默。自动安装（tauri-plugin-updater）列二期。
 - **列表/编辑回显一致性**：`list_services` 返回的 brief 以**嵌套** `config` 对象反序列化（前端 DTO 与 core `ServiceBrief` 形状一一对应；禁用 flatten —— 曾因 flatten 误配导致列表无名、编辑空白，见 D-14）。
 - **终端读写（SRS FR-6.4/6.5）**：`term_interactive && Pty` 的服务在终端窗口提供"只读/可写"开关与键盘/粘贴输入转发（`write_stdin`），控制序列按 ANSI 字节直传。
 - **终端渲染细节（SRS FR-6.6）**：屏幕帧每行渲染后补真实换行（`white-space: pre` 依赖 `\n` 文本节点分行）；服务每次启动时后端清空 vte 栅格（会话隔离，PTY 只保留当前会话）。
@@ -289,6 +290,7 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 | D-16 | 日志大小以**带单位可读值**配置与展示（`10MB`/`512KB`/`1GB`，兼容纯字节），core 统一提供 parse/format，内存模型仍为字节 | 裸字节数（10485760）不可读易错；与 supervisord 的数值后缀习惯一致；解析/格式化收敛在 core 避免前端重复实现（FR-2.2） |
 | D-17 | PTY 终端视图按**会话**隔离：服务每次启动时 vte 栅格复位清屏，日志窗口/文件仍跨会话保留 | 终端 = "当下"（进度条、REPL 等重绘场景依赖干净栅格）；日志 = 历史（带时间戳可回溯）；两者语义分离（FR-6.6） |
 | D-18 | 版本与仓库信息由包元数据**编译期注入**（版本取 `tauri.conf.json` 的 `package_info`，仓库取 Cargo `repository` 字段），经单一命令 `get_app_info` 输出，前端零硬编码 | 版本号在 tauri.conf.json 与 Cargo.toml 各有一份、本就易漂移；关于栏数据必须与安装包同源，前端再存副本只会多一处失真点（FR-2.14） |
+| D-19 | 更新检查为**纯提醒**：前端直连 GitHub Releases API（CORS 开放，零新增命令/依赖），localStorage 24h 节流；不引入 tauri-plugin-updater | 「检查更新」零基础设施即可闭环（FR-2.15）；自动安装需更新签名密钥、CI secrets 与 per-target 产物（.app.tar.gz / NSIS / AppImage + `.sig` + `latest.json`），且 deb 不受支持——列为二期（SRS §8），待 NFR-10 签名基建一并落地 |
 
 ---
 

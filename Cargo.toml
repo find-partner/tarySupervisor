@@ -35,4 +35,6 @@ web-sys = { version = "0.3", features = [
     "Navigator",
     "ClipboardEvent",
     "DataTransfer",
+    "Response",
+    "Storage",
 ] }
