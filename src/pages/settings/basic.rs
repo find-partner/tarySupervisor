@@ -196,7 +196,10 @@ pub fn basic_panel(
             {move || {
                 let eff = form.get().effective_command_line;
                 if is_new || eff.is_empty() || eff == form.get().command_line {
-                    view! { <span></span> }.into_view()
+                    // 无提示时不渲染任何节点：field-grid 按"标签→控件"两列自动配对，
+                    // 空元素也会占一个格位，让后续所有行整体错位一格（复选框行挤进
+                    // 左列、下一行标签被顶到右列）。
+                    ().into_view()
                 } else {
                     view! { <span class="hint" style="color:var(--warn)">{format!("本机实际执行：{eff}")}</span> }.into_view()
                 }
