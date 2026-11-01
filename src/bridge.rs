@@ -111,6 +111,13 @@ pub fn invoke_args_id(id: &str) -> JsValue {
     obj.into()
 }
 
+/// open_external_url 入参（FR-2.14 关于栏仓库链接）
+pub fn invoke_args_url(url: &str) -> JsValue {
+    let obj = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("url"), &JsValue::from_str(url));
+    obj.into()
+}
+
 pub fn invoke_args_log(id: &str, since: u64, limit: usize) -> JsValue {
     let obj = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("id"), &JsValue::from_str(id));

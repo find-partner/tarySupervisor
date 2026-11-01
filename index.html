@@ -103,6 +103,16 @@
       }
       .ctrlbar .spacer { flex: 1; }
 
+      /* ---------- 关于栏（FR-2.14） ---------- */
+      .settings-root { display: flex; flex-direction: column; height: 100%; }
+      .settings-root .settings { flex: 1; min-height: 0; height: auto; }
+      .about-bar {
+        display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+        border-top: 1px solid var(--line); padding: 5px 12px;
+        font-size: 11px; color: var(--muted);
+      }
+      .about-bar .link { color: var(--accent); cursor: pointer; user-select: text; }
+
       /* ---------- 日志窗口 ---------- */
       .logwin { display: flex; flex-direction: column; height: 100%; }
       .logview {

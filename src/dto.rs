@@ -371,3 +371,21 @@ pub struct ConfigInvalidEv {
     #[serde(default)]
     pub errors: Vec<String>,
 }
+
+/// get_app_info 返回（FR-2.14）：关于栏数据——版本/仓库由包元数据编译期注入
+/// （后端 AppInfoOut 镜像，D-18），前端零硬编码
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AppInfoDto {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub repository: String,
+    #[serde(default)]
+    pub os: String,
+    #[serde(default)]
+    pub arch: String,
+    #[serde(default)]
+    pub profile: String,
+}

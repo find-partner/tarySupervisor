@@ -1,8 +1,10 @@
 //! 设置窗口（FR-2 / SRS FR-2A）主组件：左侧服务列表 + 右侧三态编辑区——
 //! 空态引导（FR-2.7，empty.rs）/ 编辑模式（FR-2.8，edit.rs）/
 //! 新建向导（FR-2.9，wizard.rs）；表单模型见 form.rs，四个标签页面板见
-//! basic.rs（基础配置：命令行/平台变体/环境变量）与 panels.rs（启动策略/日志/快捷项）。
+//! basic.rs（基础配置：命令行/平台变体/环境变量）与 panels.rs（启动策略/日志/快捷项）；
+//! 窗口底部关于栏（FR-2.14）见 about.rs。
 
+mod about;
 mod basic;
 mod confirm;
 mod ctrlbar;
@@ -291,9 +293,13 @@ pub fn SettingsPage() -> impl IntoView {
         .into_view(),
     };
 
+    // 关于栏（FR-2.14）：版本号 + 仓库链接，常驻设置窗口底部
+    let about = about::about_bar();
+
     view! {
-        <div class="settings">
-            <div class="svc-list">
+        <div class="settings-root">
+            <div class="settings">
+                <div class="svc-list">
                 <h3>"服务（" {move || list.get().len()} "）"</h3>
                 {move || {
                     let data = list.get();
@@ -328,6 +334,10 @@ pub fn SettingsPage() -> impl IntoView {
             <div class="editor">
                 {editor_node}
             </div>
+        </div>
+
+            // 关于栏（FR-2.14）：常驻设置窗口底部
+            {about}
         </div>
 
         // 应用内确认弹窗（覆盖层，替代 window.confirm / dialog 插件）

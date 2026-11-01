@@ -535,3 +535,40 @@ pub fn open_log_window(app: tauri::AppHandle, id: String) {
 pub fn open_term_window(app: tauri::AppHandle, id: String) {
     crate::wins::open_term(&app, &id);
 }
+
+/// 关于信息（FR-2.14 / HLD D-18）：版本与仓库由包元数据编译期注入，前端不维护副本。
+/// 版本取 tauri.conf.json（package_info，与安装包同源），仓库取 Cargo `repository` 字段。
+#[derive(Debug, Clone, Serialize)]
+pub struct AppInfoOut {
+    pub name: String,
+    pub version: String,
+    pub repository: String,
+    pub os: String,
+    pub arch: String,
+    /// dev / release（构建 profile）
+    pub profile: String,
+}
+
+#[tauri::command]
+pub fn get_app_info(app: tauri::AppHandle) -> AppInfoOut {
+    let pkg = app.package_info();
+    AppInfoOut {
+        name: pkg.name.clone(),
+        version: pkg.version.to_string(),
+        repository: env!("CARGO_PKG_REPOSITORY").to_string(),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        profile: if cfg!(debug_assertions) { "dev" } else { "release" }.to_string(),
+    }
+}
+
+/// 经系统默认浏览器打开外部链接（FR-2.14 关于栏仓库链接等复用；校验规则同 FR-5.6）
+#[tauri::command]
+pub fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    if !traysupervisor_core::matcher::is_safe_url(&url) {
+        return Err(format!("已拒绝非 http/https 链接：{url}"));
+    }
+    app.opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|e| format!("打开浏览器失败：{e}"))
+}

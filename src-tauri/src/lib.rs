@@ -100,6 +100,8 @@ pub fn run() {
             commands::open_log_dir,
             commands::open_log_window,
             commands::open_term_window,
+            commands::get_app_info,
+            commands::open_external_url,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri 构建失败")

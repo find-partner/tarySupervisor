@@ -210,7 +210,7 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 
 ### 3.6 前端（Leptos，WASM）
 
-- 页面：服务列表 / 服务编辑（含 env KV 表、Matcher 表）/ 日志查看 / 终端视图 / 关于。
+- 页面：服务列表 / 服务编辑（含 env KV 表、Matcher 表）/ 日志查看 / 终端视图；设置窗口底部为**关于栏**（FR-2.14）。
 - 与后端交互仅通过 Tauri IPC（下节）；日志与终端视图均为 `listen("log-appended")` 增量渲染，终端视图额外接 `vte` WASM 解析（或后端解析后传渲染指令，见 §5 决策 D-3）。
 - **共享服务数据源（`store`，SRS FR-1.10）**：每个窗口内以全局信号持有 `list_services` 快照，订阅 `service-state-changed` 就地更新对应条目、`config-changed`/`config-invalid` 全量刷新；设置页服务列表与编辑页操作栏（FR-2.11）共用该数据源，保证与托盘菜单状态一致。
 - **编辑页服务操作栏（SRS FR-2.11）**：编辑模式标签栏上方提供 状态显示（色点+状态+PID）、启动/停止/重启（按状态启用/禁用）、查看日志、终端视图；动作分别调用 `start/stop/restart_service` 与 `open_log_window`/`open_term_window`。
@@ -219,6 +219,7 @@ stderr pipe ─┘                                    ├─► file-rotate sink
   - **编辑模式**：按标签页分组（基本设置 / 环境变量 / 日志 / 快捷项），每页独立"保存本页"（以整份配置快照合并提交 upsert），未保存变更在标签上标记"未保存"，切换页面不隐式保存；
   - **新建向导**：① 基本设置 → ② 环境变量 → ③ 日志 → ④ 快捷项，可上一步/跳过，最后"保存并完成"；ID 与命令行非空方可离开第①步。
 - **保存生效提示（SRS FR-2.10）**：保存成功后若服务 RUNNING/STARTING → 编辑区横幅"需重启生效" + "立即重启"按钮（`restart_service`）。
+- **关于栏（SRS FR-2.14 / D-18）**：设置窗口底部常驻一行——应用名 + 版本号（`get_app_info`，与安装包同源）、平台/构建类型与仓库链接；链接点击经 `open_external_url` 打开（http/https 校验复用 `matcher::is_safe_url`），不使用 `<a href>`（避免 WebView 内导航劫持窗口）。
 - **列表/编辑回显一致性**：`list_services` 返回的 brief 以**嵌套** `config` 对象反序列化（前端 DTO 与 core `ServiceBrief` 形状一一对应；禁用 flatten —— 曾因 flatten 误配导致列表无名、编辑空白，见 D-14）。
 - **终端读写（SRS FR-6.4/6.5）**：`term_interactive && Pty` 的服务在终端窗口提供"只读/可写"开关与键盘/粘贴输入转发（`write_stdin`），控制序列按 ANSI 字节直传。
 - **终端渲染细节（SRS FR-6.6）**：屏幕帧每行渲染后补真实换行（`white-space: pre` 依赖 `\n` 文本节点分行）；服务每次启动时后端清空 vte 栅格（会话隔离，PTY 只保留当前会话）。
@@ -248,6 +249,8 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 | `get_env_resolved_preview` | `ServiceConfig` | 展开后的 env 预览（按当前平台解析链过滤合并后展开；编辑页"预览"按钮） |
 | `parse_pasted_line` | `line: String` | `PastedLine { env: Vec<EnvEntry>, command_line: String }`（FR-2.12 粘贴解析，core 纯函数） |
 | `get_platform_info` | — | `PlatformInfo { native_os, platforms: Vec<PlatformDef>, current, chain }`（平台下拉选项/本机角标/解析链提示，FR-2.13） |
+| `get_app_info` | — | `AppInfo { name, version, repository, os, arch, profile }`（版本取 tauri.conf.json 的 package_info，仓库取 Cargo `repository` 字段，均编译期注入，D-18；FR-2.14） |
+| `open_external_url` | `url` | 校验 http/https（`matcher::is_safe_url`）后经系统默认浏览器打开（关于栏仓库链接等复用，FR-2.14） |
 | `reload_config` | `mode: reread \| update` | `ConfigDelta`（reread 仅报告差异；update 应用差异，语义见 [CLI-SPEC](./CLI-SPEC.md)） |
 | `shutdown` | — | 触发退出流程（FR-1.8：逐个停止运行中服务后退出） |
 | `write_stdin` | `id, data: Vec<u8>` | 转发至 PTY master（`term_interactive` 服务；非 Pty/未运行报错） |
@@ -285,6 +288,7 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 | D-15 | 托盘菜单、设置页列表、编辑页操作栏共用同一数据源与事件（`ServiceManager::list()` 快照 + `service-state-changed`） | 各自独立拉取/刷新曾导致设置页状态与托盘不一致；单一数据源 + 单一事件流保证三处一致（FR-1.10 / FR-2.11） |
 | D-16 | 日志大小以**带单位可读值**配置与展示（`10MB`/`512KB`/`1GB`，兼容纯字节），core 统一提供 parse/format，内存模型仍为字节 | 裸字节数（10485760）不可读易错；与 supervisord 的数值后缀习惯一致；解析/格式化收敛在 core 避免前端重复实现（FR-2.2） |
 | D-17 | PTY 终端视图按**会话**隔离：服务每次启动时 vte 栅格复位清屏，日志窗口/文件仍跨会话保留 | 终端 = "当下"（进度条、REPL 等重绘场景依赖干净栅格）；日志 = 历史（带时间戳可回溯）；两者语义分离（FR-6.6） |
+| D-18 | 版本与仓库信息由包元数据**编译期注入**（版本取 `tauri.conf.json` 的 `package_info`，仓库取 Cargo `repository` 字段），经单一命令 `get_app_info` 输出，前端零硬编码 | 版本号在 tauri.conf.json 与 Cargo.toml 各有一份、本就易漂移；关于栏数据必须与安装包同源，前端再存副本只会多一处失真点（FR-2.14） |
 
 ---
 
