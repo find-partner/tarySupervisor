@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 产品名称 | TraySupervisor（暂定名） |
-| 版本 | v0.5（与 SRS v0.5 / CONFIG-SPEC v0.5 同步） |
-| 日期 | 2026-10-05 |
+| 版本 | v0.6（与 SRS v0.6 / CONFIG-SPEC v0.6 同步） |
+| 日期 | 2026-11-02 |
 | 依据 | [软件需求规格说明书（SRS）](./SRS.md) |
 | 配套文档 | [配置文件规范（CONFIG-SPEC）](./CONFIG-SPEC.md)、[命令行工具规格（CLI-SPEC）](./CLI-SPEC.md) |
 
