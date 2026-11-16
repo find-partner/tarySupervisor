@@ -108,6 +108,12 @@ pub fn SettingsPage() -> impl IntoView {
         dirty.set(vec![false; 4]);
         restart_hint.set(None);
     };
+    // 打开终端到配置目录（FR-2.16，HLD D-20）：左栏常驻，不依赖选中服务
+    let open_term = move |_| {
+        spawn_local(async move {
+            let _ = bridge::invoke_unit_res("open_config_terminal", None).await;
+        });
+    };
 
     // ---- 保存（FR-2.8 每页独立 / FR-2.10 重启提示）----
     let save_from = move |src: form::FormState, from_wizard: bool| {
@@ -329,6 +335,7 @@ pub fn SettingsPage() -> impl IntoView {
                 }}
                 <div style="margin-top:8px">
                     <button on:click=start_wizard>"+ 新建服务"</button>
+                    <button on:click=open_term title="在系统终端打开配置目录">"打开终端"</button>
                 </div>
             </div>
 

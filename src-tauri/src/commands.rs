@@ -572,3 +572,27 @@ pub fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), Strin
         .open_url(&url, None::<&str>)
         .map_err(|e| format!("打开浏览器失败：{e}"))
 }
+
+/// 一键在系统终端打开应用配置目录（FR-2.16 设置页左栏，HLD D-20）。
+/// 目录语义同 `config_dir()`（CONFIG-SPEC §1 三级解析），便于手工查看/编辑
+/// config.ini 与 logs/。
+#[tauri::command]
+pub fn open_config_terminal() -> Result<(), String> {
+    traysupervisor_core::terminal::open_in_terminal(&traysupervisor_core::config_dir())
+}
+
+/// 一键在系统终端打开服务日志目录（FR-2.16 日志页工具栏）。已配置文件日志则取
+/// 其所在目录（路径已在配置解析期展开为绝对路径），未配置回退默认日志目录——
+/// 区别于 open_log_dir 的"未配置即报错"，终端侧总能落在一个可用的目录。
+#[tauri::command]
+pub fn open_log_terminal(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let dir = state
+        .mgr
+        .list()
+        .into_iter()
+        .find(|b| b.config.id == id)
+        .and_then(|b| b.config.log.file.map(|f| f.path))
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(traysupervisor_core::default_log_dir);
+    traysupervisor_core::terminal::open_in_terminal(&dir)
+}

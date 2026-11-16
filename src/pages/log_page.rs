@@ -1,5 +1,5 @@
 //! 日志查看窗口（FR-4.4/4.6）：自动滚动到底（上滚暂停、回底恢复）、复制、
-//! 清空视图、打开日志目录；窗口关闭不影响后端捕获。
+//! 清空视图、打开日志目录、打开终端（FR-2.16）；窗口关闭不影响后端捕获。
 
 use leptos::*;
 use wasm_bindgen::JsCast;
@@ -17,6 +17,7 @@ pub fn LogPage(id: String) -> impl IntoView {
     let (autoscroll, set_autoscroll) = create_signal(true);
     let container_ref = create_node_ref::<html::Div>();
     let id_dir = id.clone(); // 「打开日志目录」按钮用
+    let id_term = id.clone(); // 「打开终端」按钮用（FR-2.16）
 
     // 历史 + 增量
     spawn_local(async move {
@@ -106,6 +107,16 @@ pub fn LogPage(id: String) -> impl IntoView {
                 bridge::invoke_unit_res("open_log_dir", Some(bridge::invoke_args_id(&id))).await;
         });
     };
+    let open_term = move |_| {
+        let id = id_term.clone();
+        spawn_local(async move {
+            let _ = bridge::invoke_unit_res(
+                "open_log_terminal",
+                Some(bridge::invoke_args_id(&id)),
+            )
+            .await;
+        });
+    };
 
     let time_of = |ts: &str| -> String {
         // "YYYY-MM-DD HH:MM:SS.mmm" → "HH:MM:SS"
@@ -130,6 +141,7 @@ pub fn LogPage(id: String) -> impl IntoView {
                 <button on:click=copy_all>"复制全部"</button>
                 <button on:click=clear_view>"清空视图"</button>
                 <button on:click=open_dir>"打开日志目录"</button>
+                <button on:click=open_term>"打开终端"</button>
             </div>
             <div class="logview" node_ref=container_ref on:scroll=on_scroll>
                 {move || {

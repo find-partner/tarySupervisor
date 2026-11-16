@@ -8,6 +8,7 @@
 //! - [`service`]：服务状态机与进程托管（FR-3）
 //! - [`events`]：内部广播事件总线（托盘与前端共用同一事件源）
 //! - [`watcher`]：配置文件热加载（FR-2.6）
+//! - [`terminal`]：系统终端启动器（FR-2.16）
 
 pub mod config;
 pub mod events;
@@ -15,6 +16,7 @@ pub mod log;
 pub mod matcher;
 pub mod service;
 pub mod term;
+pub mod terminal;
 pub mod watcher;
 
 pub use events::{CoreEvent, LogLine, MatchItem, StopReason, Stream, SvcState};
@@ -66,11 +68,17 @@ pub fn config_path() -> PathBuf {
     config_dir().join("config.ini")
 }
 
+/// 服务文件日志默认目录：`~/.traysupervisor/logs/`（FR-2.16 日志页打开终端的
+/// 未配置兜底目录，与 `default_log_path` 同源）。
+pub fn default_log_dir() -> PathBuf {
+    config_dir().join("logs")
+}
+
 /// 服务文件日志默认路径：`~/.traysupervisor/logs/<服务ID>.log`。
 /// GUI 勾选文件日志但路径留空时自动生成（SRS FR-2.2）；INI 的 stdout_logfile
 /// 空 = 仅内存语义不变，默认路径只在 GUI 保存通道产生。
 pub fn default_log_path(service_id: &str) -> PathBuf {
-    config_dir().join("logs").join(format!("{service_id}.log"))
+    default_log_dir().join(format!("{service_id}.log"))
 }
 
 /// 展开 `~` 前缀为用户主目录（CONFIG-SPEC §3.1 directory / stdout_logfile）。
