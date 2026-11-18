@@ -131,6 +131,8 @@ pub struct FormState {
     pub spawn_mode: String,
     pub shell: bool,
     pub term_interactive: bool,
+    /// 托盘子菜单显示「打开终端」（FR-2.17 / D-21，默认 false）
+    pub sys_term_menu: bool,
     pub log_enabled: bool,
     pub log_path: String,
     /// 带单位大小展示值（`10MB` / `512KB` / `1GB` 或纯字节；解析在后端，FR-2.2 / D-16）
@@ -181,6 +183,7 @@ pub fn form_from_brief(b: &ServiceBriefOut) -> FormState {
         spawn_mode: b.config.spawn_mode.clone(),
         shell: b.config.shell,
         term_interactive: b.config.term_interactive,
+        sys_term_menu: b.config.sys_term_menu,
         log_enabled: b.config.log.file.is_some(),
         log_path: b
             .config
@@ -255,6 +258,7 @@ pub fn input_from_form(f: &FormState) -> ServiceInput {
         spawn_mode: f.spawn_mode.clone(),
         shell: f.shell,
         term_interactive: f.term_interactive,
+        sys_term_menu: f.sys_term_menu,
         // 勾选启用但路径留空 → 仍按启用提交，后端以内置默认路径生成（SRS FR-2.2）；
         // 旧逻辑会把空路径静默降级为「不启用」
         log_file_enabled: f.log_enabled,
@@ -285,6 +289,7 @@ pub fn blank_form() -> FormState {
         spawn_mode: "Pipe".into(),
         shell: false,
         term_interactive: false,
+        sys_term_menu: false,
         log_enabled: false,
         log_path: String::new(),
         log_max_bytes: "10MB".into(),
@@ -324,6 +329,7 @@ pub fn merged_for_save(loaded: &FormState, current: &FormState, tab: usize) -> F
             m.spawn_mode = current.spawn_mode.clone();
             m.shell = current.shell;
             m.term_interactive = current.term_interactive;
+            m.sys_term_menu = current.sys_term_menu;
         }
         1 => {
             m.autostart = current.autostart;

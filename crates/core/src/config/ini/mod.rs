@@ -67,6 +67,9 @@ pub fn to_ini_string(cfg: &AppConfig) -> String {
         if svc.term_interactive {
             out.push_str("term_interactive=true\n");
         }
+        if svc.sys_term_menu {
+            out.push_str("sys_term_menu=true\n");
+        }
         if !svc.env.is_empty() {
             out.push_str(&format!(
                 "environment={}\n",

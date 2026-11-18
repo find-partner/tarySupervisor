@@ -102,7 +102,7 @@ pub fn run() {
             commands::open_term_window,
             commands::get_app_info,
             commands::open_external_url,
-            commands::open_config_terminal,
+            commands::open_service_terminal,
             commands::open_log_terminal,
         ])
         .build(tauri::generate_context!())

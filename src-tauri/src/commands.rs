@@ -40,6 +40,9 @@ pub struct ServiceInput {
     /// 终端视图可写（交互，仅 Pty 有效，SRS FR-6.4）
     #[serde(default)]
     pub term_interactive: bool,
+    /// 托盘子菜单显示「打开终端」（FR-2.17 / D-21，默认 false；展示偏好，非启动语义）
+    #[serde(default)]
+    pub sys_term_menu: bool,
     pub log_file_enabled: bool,
     pub log_path: Option<String>,
     /// 带单位大小（`10MB` / `512KB` / `1GB` 或纯字节，FR-2.2 / D-16）
@@ -212,6 +215,7 @@ fn build_service_config(input: &ServiceInput) -> Result<ServiceConfig, Vec<Strin
         spawn_mode: parse_spawn_mode(&input.spawn_mode),
         shell: input.shell,
         term_interactive: input.term_interactive,
+        sys_term_menu: input.sys_term_menu,
         log: LogPolicy {
             file: if input.log_file_enabled {
                 // 路径留空 → 以内置默认路径生成（SRS FR-2.2），不再静默降级为不启用；
@@ -573,12 +577,22 @@ pub fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), Strin
         .map_err(|e| format!("打开浏览器失败：{e}"))
 }
 
-/// 一键在系统终端打开应用配置目录（FR-2.16 设置页左栏，HLD D-20）。
-/// 目录语义同 `config_dir()`（CONFIG-SPEC §1 三级解析），便于手工查看/编辑
-/// config.ini 与 logs/。
+/// 服务级"打开终端"（FR-2.17 / HLD D-21）：在系统终端 App 中打开该服务当前平台
+/// 生效的工作目录（directory / directory.<平台>，解析语义同 spawn 用的
+/// resolve_for）。未配置 directory 时回退应用配置目录——沿用"终端侧总能落在
+/// 一个可用的目录"的哲学（同 open_log_terminal），不报错。
 #[tauri::command]
-pub fn open_config_terminal() -> Result<(), String> {
-    traysupervisor_core::terminal::open_in_terminal(&traysupervisor_core::config_dir())
+pub fn open_service_terminal(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let reg = registry_of(&state);
+    let dir = state
+        .mgr
+        .list()
+        .into_iter()
+        .find(|b| b.config.id == id)
+        .map(|b| b.config.resolve_for(&reg))
+        .and_then(|eff| eff.cwd)
+        .unwrap_or_else(traysupervisor_core::config_dir);
+    traysupervisor_core::terminal::open_in_terminal(&dir)
 }
 
 /// 一键在系统终端打开服务日志目录（FR-2.16 日志页工具栏）。已配置文件日志则取

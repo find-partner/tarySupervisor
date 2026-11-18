@@ -124,6 +124,26 @@ fn duplicate_id_rejected() {
 }
 
 #[test]
+fn sys_term_menu_roundtrip() {
+    // 默认 false；显式 true 解析并保留（FR-2.17 / DESIGN-TERMINAL-REWORK §4）
+    let cfg = parse_ini_str("[program:a]\ncommand=x\n", None).unwrap();
+    assert!(!cfg.services[0].sys_term_menu);
+    let s = "[program:a]\ncommand=x\nsys_term_menu=true\n";
+    let cfg = parse_ini_str(s, None).unwrap();
+    assert!(cfg.services[0].sys_term_menu);
+    let cfg2 = parse_ini_str(&to_ini_string(&cfg), None).unwrap();
+    assert_eq!(cfg2, cfg);
+    // 非法值报错指明键名
+    assert!(parse_ini_str("[program:a]\ncommand=x\nsys_term_menu=maybe\n", None)
+        .unwrap_err()
+        .contains("sys_term_menu"));
+    // 不支持平台变体：sys_term_menu.<平台> 不在变体白名单 → 未知键报错
+    let err = parse_ini_str("[program:a]\ncommand=x\nsys_term_menu.macos=true\n", None)
+        .unwrap_err();
+    assert!(err.contains("未知键 sys_term_menu.macos"), "{err}");
+}
+
+#[test]
 fn save_load_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.ini");

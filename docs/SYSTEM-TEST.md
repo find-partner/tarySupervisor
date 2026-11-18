@@ -14,10 +14,10 @@
 
 | 层级 | 内容 | 执行方式 | 位置 |
 |------|------|----------|------|
-| L1 单元 | 配置解析/校验/env 展开/大小单位/轮转/Matcher/vte 序列/命令行切分/粘贴解析/平台解析链与合并 | `cargo test -p traysupervisor-core --lib` | `crates/core/src/**`（108 个） |
+| L1 单元 | 配置解析/校验/env 展开/大小单位/轮转/Matcher/vte 序列/命令行切分/粘贴解析/平台解析链与合并 | `cargo test -p traysupervisor-core --lib` | `crates/core/src/**`（113 个） |
 | L2 集成 | 真实进程 spawn/停止/自动重启/PTY/热加载（Unix） | `cargo test -p traysupervisor-core` | `crates/core/tests/service_tests.rs`（11 个） |
 | L3 系统·脚本化 | 托盘应用整体行为（进程、文件、信号、菜单就地更新） | `scripts/smoke-unix.sh`（S-01~S-05）/ `scripts/smoke-windows.ps1`（S-06~S-08） | `scripts/` |
-| L4 系统·手动 GUI | 托盘菜单交互、窗口渲染、对话框 | 人工按 §5 用例（ST-01~ST-27）执行 | 本文记录表 |
+| L4 系统·手动 GUI | 托盘菜单交互、窗口渲染、对话框 | 人工按 §5 用例（ST-01~ST-29）执行 | 本文记录表 |
 | CI 回归 | 三平台编译 + L1/L2 + 前端构建 | push/PR 自动触发 | `.github/workflows/ci.yml` |
 
 > GUI 自动化限制：Tauri 的 WebDriver（tauri-driver）仅支持 Windows（WebView2）与 Linux（WebKitGTK）；
@@ -173,6 +173,16 @@
   步骤：① 全局节手写 `platforms=home-mac:macos, build-box` 与 `current_platform=home-mac`，保存触发热载 ② 设置页观察解析链提示与平台下拉选项 ③ 为 `home-mac` 配命令行变体后启动服务，对比 `ps` 实际进程 ④ 手写 `current_platform=ghost`。
   预期：① 热载成功 ② 平台列/变体子标签出现自定义平台且 home-mac 带「本机」角标 ③ 实际拉起 home-mac 变体命令 ④ 校验失败横幅提示 current_platform 未注册。
 
+### 打开终端（FR-2.16 / FR-2.17 / D-20 / D-21 验收）
+
+- **ST-28 服务级打开终端与托盘显隐**
+  前置：两个服务——A：编辑页「基础配置」勾选「托盘菜单显示"打开终端"」并保存，且配置 `directory.<平台>` 变体（本机平台命中）；B：不勾选、不配置 `directory`。另需日志页可打开（A 配置 `stdout_logfile`）。
+  步骤：① 观察托盘 A / B 子菜单 ② 点击 A 子菜单「打开终端」③ 编辑页选中 B，点操作栏「打开终端」④ 取消 A 的勾选并保存 ⑤ 日志页点「打开终端」（FR-2.16 保留项）。
+  预期：① 仅 A 出现「打开终端」项，位于「终端视图」之后；B 无该项 ② 终端落在 A 的当前平台生效工作目录（变体命中）③ B 落在应用配置目录（未配置 directory 回退）④ 托盘重建后 A 的该项消失，「终端视图」不受影响（菜单展开中重建会被关闭属预期）⑤ 落在该服务日志文件所在目录。
+- **ST-29 左栏旧入口移除（FR-2.16 修订验收）**
+  步骤：① 打开设置页观察左栏「+ 新建服务」旁 ② 全文检索无 `open_config_terminal` 调用。
+  预期：① 无全局「打开终端」按钮 ② 命令已删除（编译期保证）。
+
 ### 分发形态：Windows 便携包（CONFIG-SPEC §1 便携解析）
 
 - **ST-26 绿色解压包数据目录**
@@ -215,6 +225,8 @@
 | ST-25 当前平台声明 | ☐ | ☐ | ☐ | ☐ |
 | ST-26 绿色包数据目录 | ☐ | —（CONFIG-SPEC §1 回落语义由 A1 覆盖） | — | — |
 | ST-27 paf.exe 安装与升级 | ☐ | — | — | — |
+| ST-28 服务级打开终端 | ☐ | ☐ | ☐ | ☐ |
+| ST-29 左栏旧入口移除 | ☐ | ☐ | ☐ | ☐ |
 
 脚本化用例记录：S-01~S-05（macOS 本机 2026-10-03 全过，8/8 断言）；S-06~S-08 待 Windows 真机。
 CI：A5 待仓库接入 GitHub Actions 后首次运行确认。

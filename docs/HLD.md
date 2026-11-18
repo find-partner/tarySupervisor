@@ -292,6 +292,7 @@ stderr pipe ─┘                                    ├─► file-rotate sink
 | D-18 | 版本与仓库信息由包元数据**编译期注入**（版本取 `tauri.conf.json` 的 `package_info`，仓库取 Cargo `repository` 字段），经单一命令 `get_app_info` 输出，前端零硬编码 | 版本号在 tauri.conf.json 与 Cargo.toml 各有一份、本就易漂移；关于栏数据必须与安装包同源，前端再存副本只会多一处失真点（FR-2.14） |
 | D-19 | 更新检查为**纯提醒**：前端直连 GitHub Releases API（CORS 开放，零新增命令/依赖），localStorage 24h 节流；不引入 tauri-plugin-updater | 「检查更新」零基础设施即可闭环（FR-2.15）；自动安装需更新签名密钥、CI secrets 与 per-target 产物（.app.tar.gz / NSIS / AppImage + `.sig` + `latest.json`），且 deb 不受支持——列为二期（SRS §8），待 NFR-10 签名基建一并落地 |
 | D-20 | 系统终端启动统一封装在 core 的 `terminal` 模块（`open -a Terminal` / `cmd start /D` / Linux 候选列表），命令构造为纯函数可单测（不实际 spawn，避免测试期弹窗）；Tauri 壳只做目录解析（`config_dir()` / 日志目录）与命令转发，不引入 opener 之外的插件 | 平台差异（终端 App 与目录参数各不相同）不应散落在命令层；core 不依赖 tauri 的既定原则（HLD §1.2）使该逻辑可独立单测（FR-2.16） |
+| D-21 | 服务级"打开终端"（FR-2.17）：目标目录复用 `ServiceConfig::resolve_for()` 平台解析（与 spawn 同语义），未配置 `directory` 回退 `config_dir()`；托盘项 ID `svc:<id>:systerm` 受每服务 `sys_term_menu`（opt-in，默认 false）控制、显隐随 ConfigChanged 走既有全量重建路径（静态项，不参与就地更新），不引入平台变体 | 终端入口的真实场景是"进服务工作目录手工操作"，目录语义必须与 spawn 一致，避免"服务跑得起来、终端却进错目录"；opt-in 保持托盘一级菜单克制（与 Matcher 快捷项同模式）；展示偏好不是启动语义，不进变体体系、不参与 `changed` 判定与就地更新（DESIGN-TERMINAL-REWORK §4–§6） |
 
 ---
 

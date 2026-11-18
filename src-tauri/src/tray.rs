@@ -4,7 +4,7 @@
 //!   对象——菜单展开期间状态变化**不会导致菜单消失**（FR-1.6；旧实现每次
 //!   `set_menu()` 全量重建，菜单展开时会被系统直接关闭）；
 //! - 仅服务集合变化（ConfigChanged）才全量重建；
-//! - 菜单 ID 稳定编码（FR-1.7）：svc:<id>:start|stop|restart|log|term、
+//! - 菜单 ID 稳定编码（FR-1.7）：svc:<id>:start|stop|restart|log|term|systerm、
 //!   match:<id>:<hash>、app:*；
 //! - 状态色圆点用 IconMenuItem 承载（FR-1.5），tooltip =「运行中 n / 共 m 个
 //!   服务」（FR-1.1）；数据源与设置页一致（ServiceManager::list()，FR-1.10）。
@@ -213,6 +213,20 @@ fn build_menu(
             None::<&str>,
         )?;
         submenu.append(&term_item)?;
+
+        // 「打开终端」（系统终端 App，FR-2.17 / D-21）：受 sys_term_menu 控制
+        // （opt-in，默认不出现在菜单）；显隐随配置变化走 ConfigChanged →
+        // rebuild_all 既有路径，本项为静态项、不随 StateChanged 更新
+        if brief.config.sys_term_menu {
+            let sys_term = MenuItem::with_id(
+                app,
+                format!("svc:{id}:systerm"),
+                "打开终端",
+                true,
+                None::<&str>,
+            )?;
+            submenu.append(&sys_term)?;
+        }
 
         // ⑤ Matcher 快捷项（动态生成，FR-5）
         let mut svc = SvcItems {
@@ -447,6 +461,12 @@ fn handle_menu_event(app: &AppHandle, event_id: &str) {
             }
             "log" => wins::open_log(app, id),
             "term" => wins::open_term(app, id),
+            // 打开终端（FR-2.17）：复用命令层逻辑（resolve_for 生效目录 + 回退）
+            "systerm" => {
+                if let Err(e) = crate::commands::open_service_terminal(state, id.to_string()) {
+                    log::warn!("{e}");
+                }
+            }
             _ => {}
         },
         (Some("match"), Some(svc_id), Some(rest)) => {

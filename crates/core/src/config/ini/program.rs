@@ -107,6 +107,9 @@ pub(super) fn parse_program(
     if let Some(v) = get("term_interactive") {
         svc.term_interactive = parse_bool(v, &format!("[{section_name}] term_interactive"))?;
     }
+    if let Some(v) = get("sys_term_menu") {
+        svc.sys_term_menu = parse_bool(v, &format!("[{section_name}] sys_term_menu"))?;
+    }
     if let Some(v) = get("environment") {
         svc.env = parse_environment(v).map_err(|e| format!("[{section_name}] environment：{e}"))?;
     }
@@ -222,6 +225,7 @@ fn parse_matchers(props: Props<'_>, section_name: &str) -> Result<Vec<MatcherCon
         "redirect_stderr",
         "stdout_logfile",
         "term_interactive",
+        "sys_term_menu",
         "stdout_logfile_maxbytes",
         "stdout_logfile_backups",
         "spawn_mode",

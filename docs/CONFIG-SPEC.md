@@ -66,6 +66,7 @@
 | name | string | = id | 菜单与 CLI 中的显示名 | FR-2.1 |
 | spawn_mode | enum | pipe | `pipe`（管道捕获）/ `pty`（伪终端捕获，启用只读终端视图 FR-6） | FR-2.1 / FR-6 |
 | term_interactive | bool | false | 终端视图**可写（交互）**：键盘/粘贴输入转发至服务 stdin；仅 `spawn_mode=pty` 有效，否则校验错误 | FR-6.4 |
+| sys_term_menu | bool | false | true：托盘该服务子菜单显示「打开终端」项——在系统终端 App 中打开当前平台生效工作目录（FR-2.17）；展示偏好、不影响 spawn 行为，**不支持平台变体**；编辑页操作栏按钮不受此键影响（常驻） | FR-2.17 |
 | shell | bool | false | true：经用户登录 shell（`$SHELL -ilc`）启动，继承其配置环境（PATH、nvm 等）；见 §3.5 | FR-2.1 |
 | logfile_compress | bool | false | 轮转出的旧分块 gzip 压缩 | FR-2.2 |
 | matcher.N.pattern | regex | — | 第 N 条 Matcher 正则（Rust regex 语法），N 从 1 连续递增，顺序即匹配顺序 | FR-5.1 |

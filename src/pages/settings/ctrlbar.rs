@@ -50,6 +50,17 @@ pub fn ctrl_bar(selected_id: RwSignal<Option<String>>, op_err: RwSignal<String>)
             let _ = bridge::invoke(cmd, Some(bridge::invoke_args_id(&id))).await;
         });
     };
+    // 打开终端（FR-2.17 / D-21）：系统终端 App 打开当前服务生效工作目录，
+    // 常驻入口（不受 sys_term_menu 开关控制）；失败（如本机无受支持终端）在栏内提示
+    let open_sys_term = move |id: String| {
+        spawn_local(async move {
+            let args = Some(bridge::invoke_args_id(&id));
+            match bridge::invoke_unit_res("open_service_terminal", args).await {
+                Ok(()) => op_err.set(String::new()),
+                Err(e) => op_err.set(e),
+            }
+        });
+    };
 
     view! {
         <div class="ctrlbar">
@@ -73,6 +84,7 @@ pub fn ctrl_bar(selected_id: RwSignal<Option<String>>, op_err: RwSignal<String>)
                     let id_stop = id.clone();
                     let id_restart = id.clone();
                     let id_log = id.clone();
+                    let id_sys = id.clone();
                     let id_term = id;
                     view! {
                         <span class=format!("dot {cls}")></span>
@@ -84,6 +96,7 @@ pub fn ctrl_bar(selected_id: RwSignal<Option<String>>, op_err: RwSignal<String>)
                         <span class="spacer"></span>
                         <button on:click=move |_| open_win(id_log.clone(), "open_log_window")>"查看日志"</button>
                         <button on:click=move |_| open_win(id_term.clone(), "open_term_window")>"终端视图"</button>
+                        <button on:click=move |_| open_sys_term(id_sys.clone())>"打开终端"</button>
                     }.into_view()
                 }
             }}

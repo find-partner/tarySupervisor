@@ -193,6 +193,11 @@ pub struct ServiceConfig {
     pub shell: bool,
     /// 终端视图可写（交互，默认 false；仅 Pty 模式有效，SRS FR-6.4）
     pub term_interactive: bool,
+    /// 托盘子菜单显示「打开终端」（系统终端 App，默认 false，FR-2.17 / D-21）；
+    /// 展示偏好，不影响 spawn 行为；编辑页操作栏按钮不受此键影响（常驻）。
+    /// 不支持平台变体（DESIGN-TERMINAL-REWORK §4）
+    #[serde(default)]
+    pub sys_term_menu: bool,
     /// 日志文件策略；None = 仅内存
     pub log: LogPolicy,
     /// Matcher 规则（≤20 条）；空 = 无规则（内置 URL 规则不再隐式启用，FR-5.3：
@@ -222,6 +227,7 @@ impl Default for ServiceConfig {
             spawn_mode: SpawnMode::Pipe,
             shell: false,
             term_interactive: false,
+            sys_term_menu: false,
             log: LogPolicy::default(),
             matchers: vec![],
             platform: BTreeMap::new(),

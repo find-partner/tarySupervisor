@@ -144,6 +144,9 @@ pub struct ServiceConfigDto {
     /// 终端视图可写（交互，仅 Pty 有效，SRS FR-6.4）
     #[serde(default)]
     pub term_interactive: bool,
+    /// 托盘子菜单显示「打开终端」（系统终端 App，FR-2.17 / D-21，默认 false）
+    #[serde(default)]
+    pub sys_term_menu: bool,
     #[serde(default)]
     pub log: LogPolicyDto,
     #[serde(default)]
@@ -245,6 +248,9 @@ pub struct ServiceInput {
     pub spawn_mode: String,
     pub shell: bool,
     pub term_interactive: bool,
+    /// 托盘子菜单显示「打开终端」（FR-2.17 / D-21，默认 false）
+    #[serde(default)]
+    pub sys_term_menu: bool,
     pub log_file_enabled: bool,
     pub log_path: Option<String>,
     /// 带单位大小（`10MB` / `512KB` / `1GB` 或纯字节；解析在后端，FR-2.2 / D-16）

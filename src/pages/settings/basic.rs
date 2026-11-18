@@ -246,6 +246,18 @@ pub fn basic_panel(
                     "终端视图可写（键盘输入转发 stdin；需启动捕获模式为伪终端 pty）"
                 </span>
             </label>
+            <label>"托盘菜单"</label>
+            <label style="display:flex;gap:8px;align-items:flex-start;color:var(--fg)">
+                <input type="checkbox" style="margin-top:2px;flex:none" prop:checked=move || form.get().sys_term_menu
+                    on:change=move |e| {
+                        let v = event_target_checked(&e);
+                        set_form_value(form, move |f| f.sys_term_menu = v);
+                        mark0();
+                    } />
+                <span style="flex:1;line-height:1.5">
+                    "托盘子菜单显示「打开终端」（在系统终端 App 中打开工作目录，FR-2.17）；编辑页操作栏按钮不受此开关影响"
+                </span>
+            </label>
         </div>
 
         // 平台变体（FR-2.13 / DESIGN §4.7）：仅编辑模式
