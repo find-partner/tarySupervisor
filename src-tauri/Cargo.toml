@@ -1,6 +1,6 @@
 [package]
 name = "traysupervisor"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "TraySupervisor：系统托盘后台服务管理工具（Tauri v2 壳）"
 # 关于栏（FR-2.14）经 env!("CARGO_PKG_REPOSITORY") 编译期注入（HLD D-18）
