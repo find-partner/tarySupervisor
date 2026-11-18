@@ -104,6 +104,7 @@ pub fn run() {
             commands::open_external_url,
             commands::open_service_terminal,
             commands::open_log_terminal,
+            commands::pick_directory,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri 构建失败")

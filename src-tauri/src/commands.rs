@@ -610,3 +610,33 @@ pub fn open_log_terminal(state: State<'_, AppState>, id: String) -> Result<(), S
         .unwrap_or_else(traysupervisor_core::default_log_dir);
     traysupervisor_core::terminal::open_in_terminal(&dir)
 }
+
+/// 系统原生「选择目录」对话框（FR-2.18 / HLD D-22）：设置页目录类输入的「浏览…」
+/// 按钮经此调用。走插件的 Rust API 直调——不复用 `__TAURI__.dialog` JS 注入
+/// （api-iife 注入时序不可靠，见前端 bridge.rs 注记），也无 IPC ACL 顾虑。
+/// start_dir 为输入框现值：支持 `~`（core::expand_tilde 展开），目录不存在时
+/// 忽略、回退对话框默认起点。返回 None 表示用户取消（前端保持原值不动）。
+/// 按插件文档建议在 async 命令中使用阻塞式 API：对话框在主线程模态运行，
+/// 仅阻塞当前异步工作线程，不卡 UI 主线程。
+#[tauri::command]
+pub async fn pick_directory(
+    app: tauri::AppHandle,
+    start_dir: Option<String>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let mut builder = app.dialog().file();
+    if let Some(start) = start_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let dir = traysupervisor_core::expand_tilde(start);
+        if dir.is_dir() {
+            builder = builder.set_directory(dir);
+        }
+    }
+    let picked = builder.blocking_pick_folder();
+    Ok(picked
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned()))
+}

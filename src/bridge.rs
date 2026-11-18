@@ -118,6 +118,17 @@ pub fn invoke_args_url(url: &str) -> JsValue {
     obj.into()
 }
 
+/// pick_directory 入参（FR-2.18 目录浏览按钮）：startDir = 输入框现值（支持 ~）
+pub fn invoke_args_start_dir(start: &str) -> JsValue {
+    let obj = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &obj,
+        &JsValue::from_str("startDir"),
+        &JsValue::from_str(start),
+    );
+    obj.into()
+}
+
 /// window.fetch(url) → JSON 值（更新检查 FR-2.15 直连 GitHub Releases API，CORS 开放）。
 /// fetch 经 Reflect 调用（不依赖 web-sys 的 Request 特性门），响应按 web_sys::Response 处理。
 pub async fn fetch_json(url: &str) -> Result<JsValue, String> {

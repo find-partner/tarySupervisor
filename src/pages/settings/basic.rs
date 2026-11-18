@@ -1,5 +1,6 @@
 //! 「基础配置」标签页（DESIGN §2 ①）：ID / 显示名 / 命令行（含粘贴解析 FR-2.12）/
-//! 平台变体（FR-2.13）/ 工作目录 / shell / 捕获模式 / 交互终端 / 环境变量表（含行级平台列）。
+//! 平台变体（FR-2.13）/ 工作目录（系统选目录 FR-2.18）/ shell / 捕获模式 / 交互终端 /
+//! 环境变量表（含行级平台列）。
 //! 页内小节「平台变体」仅编辑模式显示（show_variants），新建向导不显示（DESIGN §5）。
 
 use leptos::*;
@@ -217,13 +218,12 @@ pub fn basic_panel(
                 </span>
             </label>
             <label>"工作目录"</label>
-            <input type="text" placeholder="默认用户目录，支持 ~"
-                prop:value=move || form.get().cwd.clone()
-                on:input=move |e| {
-                    let v = event_target_value(&e);
-                    set_form_value(form, move |f| f.cwd = v);
-                    mark0();
-                } />
+            {dir_input(
+                "默认用户目录，支持 ~",
+                move || form.get().cwd.clone(),
+                move |v| set_form_value(form, move |f| f.cwd = v),
+                mark0,
+            )}
             <label>"启动捕获模式"</label>
             <select on:change=move |e| {
                     let v = event_target_value(&e);
@@ -275,6 +275,65 @@ pub fn basic_panel(
         // 环境变量（原独立标签页并入基础配置，DESIGN §2 ①）
         <h3 style="margin:14px 0 6px;">"环境变量"</h3>
         {env_table(form, mark0, platform_info, on_preview)}
+    }
+}
+
+/// 目录输入 + 「浏览…」按钮（FR-2.18 / HLD D-22）：点击弹系统原生文件夹选择
+/// 对话框（pick_directory 命令——插件的 Rust API 直调，不走时序不可靠的
+/// `__TAURI__.dialog` JS 注入，见 bridge.rs 注记），选中后回填输入框；手动输入
+/// 保留。get/set 闭包隔离默认字段与平台变体字段两种写入路径；取消（None）保持
+/// 原值不动，调用失败经行内 hint 提示。prop:value/on:input 与浏览回填共用
+/// set + mark0（浏览回填同样置脏，走既有保存/重启提示路径）。
+fn dir_input(
+    placeholder: &'static str,
+    get: impl Fn() -> String + Clone + 'static,
+    set: impl Fn(String) + Clone + 'static,
+    mark0: impl Fn() + Clone + 'static,
+) -> impl IntoView {
+    let hint = create_rw_signal(String::new());
+    // 各闭包独立持有克隆（先克隆再建处理器：view! 宏会把处理器逐个 move）
+    let (get_b, set_b, mark_b) = (get.clone(), set.clone(), mark0.clone());
+    let on_browse = move |_| {
+        hint.set(String::new());
+        let args = bridge::invoke_args_start_dir(&get_b());
+        // 再克隆一次进 async 块：直接 move 会把 on_browse 降级为 FnOnce（on:click 需 FnMut）
+        let (set_s, mark_s) = (set_b.clone(), mark_b.clone());
+        spawn_local(async move {
+            match bridge::invoke("pick_directory", Some(args)).await {
+                Ok(v) => match serde_wasm_bindgen::from_value::<Option<String>>(v) {
+                    Ok(Some(p)) => {
+                        set_s(p);
+                        mark_s();
+                    }
+                    // 用户取消：保持原值不动
+                    Ok(None) => {}
+                    Err(e) => hint.set(format!("读取选择结果失败：{e}")),
+                },
+                Err(e) => hint.set(format!(
+                    "打开目录选择失败：{}",
+                    e.as_string().unwrap_or_else(|| format!("{e:?}"))
+                )),
+            }
+        });
+    };
+    let (get_in, set_in, mark_in) = (get, set, mark0);
+    view! {
+        <div style="display:flex;gap:8px;align-items:center;width:100%">
+            <input type="text" placeholder=placeholder style="width:100%"
+                prop:value=move || get_in()
+                on:input=move |e| {
+                    let v = event_target_value(&e);
+                    set_in(v);
+                    mark_in();
+                } />
+            <button style="flex:none" title="浏览选择目录"
+                on:click=on_browse>"浏览…"</button>
+            {move || {
+                let h = hint.get();
+                if h.is_empty() { ().into_view() }
+                else { view! { <span class="hint" style="color:var(--warn)">{h}</span> }.into_view() }
+            }}
+        </div>
     }
 }
 
@@ -363,10 +422,6 @@ fn platform_variant_fields(
         let p = platform.clone();
         move || form.get().platform_get(&p).command_line
     };
-    let g_cwd = {
-        let p = platform.clone();
-        move || form.get().platform_get(&p).cwd
-    };
     // select 回显：prop:value 首次求值早于 options 挂载会丢失选中态，而 effect/spawn_local
     // 在动态子树重建时会在已销毁 owner 上 panic（leptos 0.6 runtime.rs:824）。
     // 故把整个 select 作为动态子树随值重建，选中态用构建期 selected 属性表达。
@@ -404,9 +459,8 @@ fn platform_variant_fields(
             }
         }
     };
-    // 四个字段处理器各自持有克隆（move 闭包独占所有权）
+    // 字段处理器各自持有克隆（move 闭包独占所有权）
     let p_cmd = platform.clone();
-    let p_cwd = platform.clone();
     view! {
         <div class="hint" style="margin:0 0 6px;">{family_hint}</div>
         <div class="field-grid">
@@ -418,12 +472,18 @@ fn platform_variant_fields(
                     set_platform_field(form, &p_cmd, |pf| pf.command_line = v, mark0);
                 } />
             <label>{label_cwd}</label>
-            <input type="text" placeholder="留空 = 使用默认工作目录，支持 ~"
-                prop:value=g_cwd
-                on:input=move |e| {
-                    let v = event_target_value(&e);
-                    set_platform_field(form, &p_cwd, |pf| pf.cwd = v, mark0);
-                } />
+            {dir_input(
+                "留空 = 使用默认工作目录，支持 ~",
+                {
+                    let p = platform.clone();
+                    move || form.get().platform_get(&p).cwd
+                },
+                {
+                    let p = platform.clone();
+                    move |v| set_platform_field(form, &p, |pf| pf.cwd = v, mark0)
+                },
+                mark0,
+            )}
             <label>{label_sm}</label>
             {sel_sm}
             <label>{label_ti}</label>
