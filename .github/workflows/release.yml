@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             targets: aarch64-apple-darwin,x86_64-apple-darwin,wasm32-unknown-unknown
             tauri_args: --target universal-apple-darwin
             bundles: target/universal-apple-darwin/release/bundle/dmg/*.dmg
